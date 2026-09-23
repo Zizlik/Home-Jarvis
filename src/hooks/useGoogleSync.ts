@@ -55,7 +55,7 @@ export function useGoogleSync() {
         if (busy.current.has(id)) continue;
         const old = before.get(id);
         const isNew = !old;
-        const edited = old && old.text !== item.text;
+        const edited = old && (old.text !== item.text || old.intent !== item.intent);
         if (!isNew && !edited) continue;
         const card = toGoogle(item, p);
         if (!card) continue;

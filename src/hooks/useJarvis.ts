@@ -3,7 +3,7 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { buildCard, type Card, cardText, classify, decide, DESTINATION, targetIntent } from "@/lib/jarvis/cards";
-import type { IntentResult } from "@/lib/jev/types";
+import type { CardIntent, IntentResult } from "@/lib/jev/types";
 import { registry } from "@/components/intents/registry";
 import { chime } from "@/hooks/useWakeWord";
 import { type SavedItem, savedItems } from "@/lib/savedItems";
@@ -211,6 +211,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   const hangUpRef = useRef<() => void>(() => undefined);
   // handle() hangs up before switching to another page.
   const stopRef = useRef<() => void>(() => undefined);
+  // "dej mi do kalendáře, že…" [pause] "zítra vyzvednout balík": the destination carries over (15 s).
+  const pendingTarget = useRef<{ intent: CardIntent; at: number } | null>(null);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
   const lastCommand = useRef<{ action: string; at: number; result: string } | null>(null);
   // The agent just read out an email and asked whether to send it: "ano"/"ne" is for the agent.
@@ -387,10 +389,44 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         lastCommand.current = { action: save ? "save" : "discard", at: Date.now(), result };
         return result;
       }
+      // "hoď to do kalendáře": move the card on screen (or the one just saved) there, and save it.
+      const named = targetIntent(utterance);
+      const leftover = cardText(utterance)
+        .replace(/(?<![\p{L}])(to|ho|ji|je|že|ze|tě|te|toho|tam|tu|tuhle|tenhle|ten|kartu|prosím|prosim|taky|také|radši|radsi|mi|si|hoď|hod|hodit|dej|dát|dat|přesuň|presun|přehoď|prehod|vlož|vloz|pošli|posli|ulož|uloz|zapiš|zapis|přidej|pridej|yes|ano|jo)(?![\p{L}])/giu, " ")
+        .replace(/[,.!?]/g, " ")
+        .trim();
+      // "dej to do Googlu" = save the card on screen (it syncs to where its kind goes).
+      if (!meeting && !named && !leftover && /(?<![\p{L}])(do|v)\s+googl\p{L}*/iu.test(utterance) && shapeshift.current?.current().text.trim()) {
+        shapeshift.current?.save();
+        ack();
+        return "Uloženo. Řekni jen „Hotovo.“";
+      }
+      if (!meeting && named && !leftover) {
+        const shownCard = shapeshift.current?.current();
+        if (shownCard?.text.trim()) {
+          shapeshift.current?.show(shownCard.text, named);
+          shapeshift.current?.save();
+          ack();
+          return `Přesunuto a uloženo do ${DESTINATION[named] ?? "Googlu"}. Řekni jen „Hotovo.“`;
+        }
+        const recent = savedItems.getSnapshot()[0];
+        if (recent && Date.now() - recent.createdAt < 10 * 60_000 && recent.intent !== named) {
+          // The sync sees the new kind and moves it in Google (removes the old, writes the new).
+          const c = buildCard(recent.text, { ...(await classifyOnce(recent.text))!, intent: { value: named, confidence: 1, probabilities: {} } }, named);
+          savedItems.update((list) => list.map((x) => (x.id === recent.id ? { ...x, intent: named, summary: c.summary } : x)));
+          ack();
+          return `Přesunuto do ${DESTINATION[named] ?? "Googlu"}. Řekni jen „Hotovo.“`;
+        }
+        pendingTarget.current = { intent: named, at: Date.now() };
+        return "Poslouchám, co tam mám zapsat? Řekni jen „Co tam mám dát?“";
+      }
       const jev = await classifyOnce(utterance);
       if (!jev) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
-      // "…do kalendáře" makes it an event whatever Jev guessed (card and Google destination must match).
-      const target = targetIntent(utterance);
+      // "…do kalendáře" makes it an event whatever Jev guessed (card and Google destination must match);
+      // a destination said just before a pause still counts.
+      const carried = pendingTarget.current && Date.now() - pendingTarget.current.at < 15_000 ? pendingTarget.current.intent : null;
+      pendingTarget.current = null;
+      const target = named ?? carried;
       const r = target && jev.intent.value !== target && (jev.action?.value === "create" || jev.action?.value === "update" || !jev.action)
         ? { ...jev, intent: { ...jev.intent, value: target }, action: jev.action && { ...jev.action, value: "create" as const } }
         : jev;

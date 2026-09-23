@@ -43,14 +43,14 @@ function nominativeHead(text: string) {
  * "do úkolů" a reminder (Tasks), "do poznámek / do Keepu" a note (Keep).
  */
 const TARGETS: [RegExp, CardIntent][] = [
-  [/(?<![\p{L}])(do|v|ve|na)\s+(kalendář\p{L}*|kalendar\p{L}*)|(?<![\p{L}])kalendář(?![\p{L}])/iu, "event"],
+  [/(?<![\p{L}])(do|v|ve|na)\s+((toho|tvého|tvyho|mého|mýho|mojeho|svého|můj|muj|ten|tom|tvém|mém)\s+)?(kalendář\p{L}*|kalendar\p{L}*)|(?<![\p{L}])kalendář(?![\p{L}])/iu, "event"],
   [/(?<![\p{L}])(do|v|ve|mezi)\s+(úkol\p{L}*|ukol\p{L}*|tasks?|to-?do)(?![\p{L}])/iu, "reminder"],
   [/(?<![\p{L}])(do|v|ve|mezi)\s+(poznám\p{L}*|poznam\p{L}*|keep\p{L}*)(?![\p{L}])/iu, "note"],
 ];
 export function targetIntent(utterance: string): CardIntent | null {
   return TARGETS.find(([re]) => re.test(utterance))?.[1] ?? null;
 }
-const TARGET_WORDS = /\s*(?<![\p{L}])(?:do|v|ve|na|mezi)\s+(?:kalendář\p{L}*|kalendar\p{L}*|úkol\p{L}*|ukol\p{L}*|tasks?|poznám\p{L}*|poznam\p{L}*|keep\p{L}*)(?![\p{L}])/giu;
+const TARGET_WORDS = /\s*(?<![\p{L}])(?:do|v|ve|na|mezi)\s+(?:(?:toho|tvého|tvyho|mého|mýho|svého|můj|muj|ten|tom|tvém|mém|těch|mých)\s+)?(?:googl\p{L}*|kalendář\p{L}*|kalendar\p{L}*|úkol\p{L}*|ukol\p{L}*|tasks?|poznám\p{L}*|poznam\p{L}*|keep\p{L}*)(?![\p{L}])/giu;
 
 /** Where a saved card of this kind goes in Google (for Jarvis to say). */
 export const DESTINATION: Partial<Record<CardIntent, string>> = { event: "Google Kalendáře", reminder: "Google Tasks", todo: "Google Tasks", note: "Google Keep" };

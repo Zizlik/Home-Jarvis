@@ -9,3 +9,4 @@ for (const t of [
   "opravdu to je v kalendáři?",
   "zítra v deset porada",
 ]) console.log(`${(targetIntent(t) ?? "-").padEnd(9)} „${cardText(t)}“  ← ${t}`);
+for (const t of ["hoď to do toho kalendáře", "yes, dej to do googlu", "prosím tě, dej mi do kalendáře, že"]) console.log(`${(targetIntent(t) ?? "-").padEnd(9)} „${cardText(t)}“  ← ${t}`);
