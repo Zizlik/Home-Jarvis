@@ -61,7 +61,7 @@ async function signKeyless(email: string, claims: object) {
   if (!data.signedJwt) {
     const msg = data.error?.message ?? `Google ${res.status}`;
     if (/insufficient.*scope/i.test(msg)) throw new Error("Odpoj a znovu připoj Google (chybí oprávnění pro podpis servisního účtu).");
-    if (data.error?.status === "PERMISSION_DENIED") throw new Error(`Chybí role „Service Account Token Creator“ na servisním účtu, nebo je vypnuté IAM Service Account Credentials API. (${msg.split(".")[0]})`);
+    if (data.error?.status === "PERMISSION_DENIED") throw new Error(`Chybí role „Service Account Token Creator“ na servisním účtu, nebo je vypnuté IAM Service Account Credentials API. Google: ${msg}`);
     throw new Error(msg);
   }
   return data.signedJwt;
