@@ -8,7 +8,11 @@ import type { IntentResult } from "@/lib/jev/types";
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
 export type LogLine = { at: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
 
-type Conn = { pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; audio: HTMLAudioElement };
+/** `ownMic`: the session opened the mic itself (vs. reusing the wake word's) and closes it. */
+type Conn = { pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; ownMic: boolean; audio: HTMLAudioElement; idle: ReturnType<typeof setInterval> };
+
+/** Hang up after this long with nobody speaking: a voice session bills per second. */
+const IDLE_MS = 30_000;
 
 /**
  * GPT-Live over WebRTC with client delegation: Jarvis talks, the app does the work.
@@ -141,7 +145,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   const cleanup = useCallback(() => {
     const c = conn.current;
     conn.current = null;
-    c?.mic.getTracks().forEach((t) => t.stop());
+    if (c) clearInterval(c.idle);
+    if (c?.ownMic) c.mic.getTracks().forEach((t) => t.stop());
     c?.dc.close();
     c?.pc.close();
     if (c) c.audio.srcObject = null;
@@ -149,10 +154,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   }, []);
 
   const start = useCallback(
-    async (voice?: string) => {
+    async (voice?: string, sharedMic?: MediaStream | null) => {
       if (conn.current) return;
       setStatus("connecting");
-      setLog([]);
+      // Keep earlier conversations in the transcript; timings restart per conversation.
       setAnswer(null);
       turn.current = { text: "", jarvisSpoke: false };
       history.current = [];
@@ -166,15 +171,23 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           audio.srcObject = new MediaStream([e.track]);
           audio.play().catch(() => push("error", "Prohlížeč zablokoval zvuk, klikni kamkoliv na stránku."));
         });
-        const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        const live = sharedMic?.getAudioTracks().some((t) => t.readyState === "live");
+        const mic = live && sharedMic ? sharedMic : await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
         mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
         const dc = pc.createDataChannel("oai-events");
-        conn.current = { pc, dc, mic, audio };
         const send = (ev: object) => dc.readyState === "open" && dc.send(JSON.stringify(ev));
+        let lastActivity = performance.now();
+        const idle = setInterval(() => {
+          if (performance.now() - lastActivity < IDLE_MS || dc.readyState !== "open" || conn.current?.dc !== dc) return;
+          push("info", "Nikdo nemluví, končím.");
+          send({ type: "session.close" });
+        }, 5000);
+        conn.current = { pc, dc, mic, ownMic: mic !== sharedMic, audio, idle };
         let spoken = "";
 
         dc.addEventListener("message", async ({ data }) => {
           const ev = JSON.parse(data as string);
+          if (/transcript\.delta$|delegation\.created$/.test(ev.type)) lastActivity = performance.now();
           switch (ev.type) {
             case "session.started":
               setStatus("live");
