@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { AGENT_INSTRUCTIONS } from "@/lib/jarvis/config";
-import { status as googleStatus } from "@/lib/google/auth";
+import { account as googleAccount } from "@/lib/google/auth";
 import { GOOGLE_TOOLS, MEETING_TOOLS, runGoogleTool } from "@/lib/google/tools";
 import { mcpTools, readSettings } from "@/lib/settings";
 
@@ -31,7 +31,8 @@ export async function POST(request: Request) {
   const now = new Date().toLocaleString("cs-CZ", { timeZone: "Europe/Prague", dateStyle: "full", timeStyle: "short" });
   client ??= new OpenAI({ maxRetries: 0 });
   const started = performance.now();
-  const withGoogle = (await googleStatus()).connected;
+  // Signed-in check only: the full status also probes Keep over the network.
+  const withGoogle = !!(await googleAccount());
   const call = (tools: OpenAI.Responses.Tool[], input: OpenAI.Responses.ResponseInput | string, prev?: string) =>
     client!.responses.create(
       {

@@ -1,7 +1,7 @@
 "use client";
 
 import { Captions, CaptionsOff, Ear, EarOff, Loader2, NotebookPen, Settings, Sparkles, Square } from "lucide-react";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Shapeshift, type ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { type LogLine, useJarvis } from "@/hooks/useJarvis";
 import { chime, useWakeWord } from "@/hooks/useWakeWord";
@@ -53,7 +53,7 @@ const WAKE_LABEL: Record<string, string> = {
 export function Jarvis() {
   const shapeshift = useRef<ShapeshiftController>(null);
   useGoogleSync();
-  const { status, log, answer, start, stop } = useJarvis(shapeshift);
+  const { status, log, answer, start, stop, prewarm } = useJarvis(shapeshift);
   // ?voice= overrides the saved voice, for trying voices out.
   const voice = useSyncExternalStore(
     subscribeNoop,
@@ -66,6 +66,16 @@ export function Jarvis() {
     chime("heard");
     void start(voice || undefined, mic);
   });
+
+  // While waiting for "Hey Jarvis", keep a connection ready (refreshed; nothing is sent to OpenAI).
+  const wakeStream = wake.stream;
+  const listening = wake.status === "listening" && status === "idle";
+  useEffect(() => {
+    if (!listening) return;
+    void prewarm(wakeStream);
+    const id = setInterval(() => void prewarm(wakeStream), 50_000);
+    return () => clearInterval(id);
+  }, [listening, prewarm, wakeStream]);
 
   const busy = status === "connecting" || status === "closing";
   const live = status === "live";

@@ -104,6 +104,15 @@ export const questions = {
     ask: "Ask a question, look something up (weather, calendar, email, tasks, notes, news), check off a task as done, or send an email or message to someone",
     chat: "Greeting, thanks or small talk with no task",
   }),
+  askTopic: choice("If this is a question or request for information, what is it about", {
+    calendar: "The person's calendar, schedule, meetings or events on some day",
+    tasks: "The person's tasks or to-do items, what is done or not done",
+    email: "The person's email or messages, or sending one",
+    notes: "The person's saved notes or lists (Google Keep)",
+    meetings: "What was discussed or decided in a past meeting that was recorded",
+    web: "General knowledge, news, weather, prices or anything to look up on the internet",
+    none: "Not a question, or none of the above",
+  }),
   hasExplicitOptions: noul("The text names two or more explicit options to pick between"),
   isShoppingList: noul("The listed items are things to buy"),
 };

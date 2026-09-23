@@ -43,6 +43,9 @@ export const TIMER_KINDS = ["countdown", "focus", "break", "stopwatch"] as const
 /** Jarvis: what to do with the card (asked alongside the intent). */
 export const ACTIONS = ["create", "update", "save", "discard", "ask", "chat"] as const;
 export type Action = (typeof ACTIONS)[number];
+/** Jarvis: what a question is about, so common ones skip the agent model. */
+export const ASK_TOPICS = ["calendar", "tasks", "email", "notes", "meetings", "web", "none"] as const;
+export type AskTopic = (typeof ASK_TOPICS)[number];
 
 export type Tone = (typeof TONES)[number];
 export type EventMode = (typeof EVENT_MODES)[number];
@@ -95,6 +98,7 @@ export const intentResultSchema = z.object({
   error: z.boolean().optional(),
   source: z.enum(["jev", "mock"]).optional(),
   action: answerSchema(ACTIONS).optional(),
+  askTopic: answerSchema(ASK_TOPICS).optional(),
 });
 export type IntentResult = z.infer<typeof intentResultSchema>;
 

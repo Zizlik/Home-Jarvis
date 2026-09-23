@@ -8,6 +8,7 @@ import { registry } from "@/components/intents/registry";
 import { chime } from "@/hooks/useWakeWord";
 import { type SavedItem, savedItems } from "@/lib/savedItems";
 import { findSaved, hasContent, overlap } from "@/lib/jarvis/saved";
+import { periodFor } from "@/lib/jarvis/period";
 
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
 export type LogLine = { at: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
@@ -32,6 +33,40 @@ const TRAILING_COMMAND =
 
 /** Long or rambling dictation gets tidied into card text by Gemini (/api/card). */
 const needsCleanup = (t: string) => t.split(/\s+/).length > 12 || /…|\.\s+\S.*\.\s+\S/.test(t);
+
+/** Wait until the offer has all its ICE candidates (Live takes no trickle ICE). */
+async function gathered(pc: RTCPeerConnection) {
+  if (pc.iceGatheringState === "complete") return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Vypršelo navazování spojení.")), 10_000);
+    const onState = () => {
+      if (pc.iceGatheringState !== "complete") return;
+      clearTimeout(timeout);
+      pc.removeEventListener("icegatheringstatechange", onState);
+      resolve();
+    };
+    pc.addEventListener("icegatheringstatechange", onState);
+  });
+}
+
+/** Same words, same key: the transcript preview and the delegation share work. */
+const keyOf = (u: string) => u.replace(/\[[^\]]*\]?/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+
+/** Questions answered straight from the data (/api/quick), no agent model. */
+const QUICK_TOPICS = new Set(["calendar", "tasks", "notes", "meetings"]);
+/** When Jev isn't sure what a question is about, obvious words decide. */
+const TOPIC_WORDS: [string, RegExp][] = [
+  ["tasks", /(?<![\p{L}])(úkol\p{L}*|ukol\p{L}*|tasks?|to-?do)(?![\p{L}])/iu],
+  ["calendar", /(?<![\p{L}])(kalendář\p{L}*|kalendar\p{L}*|program|rozvrh|mám\s+(zítra|dnes|v\s+\p{L}+)\s+něco)(?![\p{L}])/iu],
+  ["notes", /(?<![\p{L}])(keep\p{L}*|poznámk\p{L}*|poznamk\p{L}*)(?![\p{L}])/iu],
+  ["meetings", /(?<![\p{L}])(meeting\p{L}*|mítink\p{L}*|porad\p{L}*|schůzk\p{L}*\s+jsme)(?![\p{L}])/iu],
+];
+const topicOf = (r: IntentResult, utterance: string) => {
+  const jev = r.askTopic;
+  if (jev && QUICK_TOPICS.has(jev.value) && jev.confidence >= 0.8) return jev.value;
+  return TOPIC_WORDS.find(([, re]) => re.test(utterance))?.[0] ?? null;
+};
+const ASKS_DONE = /(?<![\p{L}])(splněn\p{L}*|splnen\p{L}*|hotov\p{L}*|udělal\p{L}*|udelal\p{L}*|dokončen\p{L}*|dokoncen\p{L}*)(?![\p{L}])/iu;
 
 /** What Jarvis knows about the saved list (a Live append holds at most 500 tokens). */
 function savedContext(list: SavedItem[]) {
@@ -69,6 +104,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     queue.current = run.catch(() => undefined);
     return run;
   }, []);
+  // Work started while the user is still talking (Gemini tidy/revise, quick answers), by kind:utterance.
+  const early = useRef(new Map<string, Promise<unknown>>());
+  // A peer connection with its offer already gathered, so a session starts ~0.2 s sooner.
+  const prepared = useRef<{ pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; at: number } | null>(null);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
   const lastCommand = useRef<{ action: string; at: number; result: string } | null>(null);
   // The agent just read out an email and asked whether to send it: "ano"/"ne" is for the agent.
@@ -97,6 +136,40 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     return p;
   }, []);
 
+  /** Run `work` once per kind+utterance; the preview can start it, the delegation reuses it. */
+  const once = useCallback(<T,>(kind: string, utterance: string, work: () => Promise<T>): Promise<T> => {
+    const k = `${kind}:${keyOf(utterance)}`;
+    let p = early.current.get(k) as Promise<T> | undefined;
+    if (!p) {
+      p = work();
+      early.current.set(k, p);
+      if (early.current.size > 40) early.current.delete(early.current.keys().next().value!);
+    }
+    return p;
+  }, []);
+
+  const postCard = (body: object) =>
+    fetch("/api/card", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then((r) => r.json())
+      .then((b: { text?: string }) => b.text ?? null)
+      .catch(() => null);
+
+  /** Straight from Calendar/Tasks/Keep/meetings, or null (then the agent answers). */
+  const quick = useCallback(
+    (utterance: string, topic: string) =>
+      once(`quick-${topic}`, utterance, async () => {
+        const { from, to } = periodFor(utterance);
+        const res = await fetch("/api/quick", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ topic, from: from.toISOString(), to: to.toISOString(), completed: ASKS_DONE.test(utterance) }),
+        }).catch(() => null);
+        const body = (await res?.json().catch(() => null)) as { facts?: string | null } | null;
+        return body?.facts ?? null;
+      }),
+    [once],
+  );
+
   /** While the user is still talking: preview the card they are dictating. */
   const preview = useCallback(
     (utterance: string) => {
@@ -107,7 +180,15 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         const r = await classifyOnce(utterance);
         if (!r || turn.current.text !== utterance) return; // stale
         const d = decide(r);
-        if (d.action === "create" && r.intent.value !== "none" && text.length >= 3) show(buildCard(text, r));
+        if (d.action === "create" && r.intent.value !== "none" && text.length >= 3) {
+          show(buildCard(text, r));
+          if (needsCleanup(text)) void once("clean", utterance, () => postCard({ utterance: text }));
+        }
+        // Get the slow parts going now; the delegation picks them up when it arrives.
+        const shown = shapeshift.current?.current();
+        if (d.action === "update" && shown?.text.trim()) void once("revise", utterance, () => postCard({ card: shown.text, change: utterance }));
+        const topic = topicOf(r, utterance);
+        if (d.action === "ask" && topic) void quick(utterance, topic);
         // "ulož to" / "zruš to" act at once; the delegation then just reports it.
         if ((d.action === "save" || d.action === "discard") && d.actionConfidence >= 0.9 && utterance.split(/\s+/).length <= 6) {
           const key = utterance.trim().toLowerCase();
@@ -115,7 +196,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         }
       }, 250);
     },
-    [classifyOnce, enqueue, show],
+    [classifyOnce, enqueue, once, quick, shapeshift, show],
   );
 
   /** Do what the user asked; returns what Jarvis should say. */
@@ -129,12 +210,15 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
       }
       const r = await classifyOnce(utterance);
       if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
-      const replyToAgent =
-        (agentAsked.current && /^(\S+\s+){0,5}\S*$/.test(utterance.trim())) ||
-        // "zavolat mámě je hotové", "odškrtni mléko": a task in Google, not a card edit.
+      // "zavolat mámě je hotové", "odškrtni mléko": checking off a task in Google, not a card edit.
+      // A question about it ("jaké mám splněné úkoly?") is not that: it goes the quick way below.
+      const asking = /\?\s*$|^(a\s+)?(jak\p{L}*|co|kter\p{L}*|kolik|kdy|mám|mam|máme|mame|jsou|je)(?![\p{L}])/iu.test(utterance.trim());
+      const checkOff =
+        !asking &&
         /(?<![\p{L}])(hotov[éáýo]?|splněn[éáýo]?|splnen[eayo]?|odškrtni|odskrtni|zaškrtni|zaskrtni|vyřízen[éáýo]?|vyrizen[eayo]?|udělal jsem|udelal jsem|mám hotovo|mam hotovo)(?![\p{L}])/iu.test(utterance);
+      const replyToAgent = (agentAsked.current && /^(\S+\s+){0,5}\S*$/.test(utterance.trim())) || checkOff;
       const { action } = replyToAgent ? { action: "ask" as const } : decide(r);
-      push("tool", `Jev: ${action} · ${r.intent.value} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
+      push("tool", `Jev: ${action} · ${r.intent.value}${r.askTopic && r.askTopic.value !== "none" ? ` · téma ${r.askTopic.value}` : ""} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
       const last = lastCommand.current;
       if ((action === "save" || action === "discard") && last?.action === action && Date.now() - last.at < 5000) return last.result;
       const remember = (result: string) => {
@@ -156,15 +240,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           let c = buildCard(cardText(utterance), r);
           show(c);
           if (needsCleanup(c.text)) {
-            // Show the rough card now, the tidy one in ~0.7 s.
-            const res = await fetch("/api/card", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ utterance: c.text }),
-            }).catch(() => null);
-            const body = (await res?.json().catch(() => ({}))) as { text?: string } | undefined;
-            if (body?.text) {
-              c = buildCard(body.text, r);
+            // Show the rough card now, the tidy one when Gemini is done (often already, from the preview).
+            const tidy = await once("clean", utterance, () => postCard({ utterance: c.text }));
+            if (tidy) {
+              c = buildCard(tidy, r);
               show(c);
             }
           }
@@ -189,15 +268,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
             show(c);
             return `Zobrazená karta, zatím neuložená. ${describe(c)}.`;
           }
-          const res = await fetch("/api/card", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ card: current.text, change: utterance }),
-          });
-          const body = (await res.json().catch(() => ({}))) as { text?: string };
-          if (!body.text) return "Změnu se nepodařilo použít, řekni ji prosím jinak.";
-          const r2 = await classifyOnce(body.text);
-          const c = r2 ? buildCard(body.text, r2) : { ...current, text: body.text };
+          const revised = await once("revise", utterance, () => postCard({ card: current.text, change: utterance }));
+          if (!revised) return "Změnu se nepodařilo použít, řekni ji prosím jinak.";
+          const r2 = await classifyOnce(revised);
+          const c = r2 ? buildCard(revised, r2) : { ...current, text: revised };
           show(c);
           return `Karta upravená, zatím neuložená. ${describe(c)}.`;
         }
@@ -215,6 +289,15 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           return remember("Karta zahozená.");
         }
         default: {
+          const topic = topicOf(r, utterance);
+          if (!replyToAgent && topic) {
+            const facts = await quick(utterance, topic);
+            if (facts) {
+              push("tool", `rychlá odpověď: ${topic}`);
+              setAnswer(facts);
+              return `Údaje (řekni je stručně a přirozeně, časy slovy): ${facts}`;
+            }
+          }
           const context = [
             current ? `Na obrazovce je karta ${describe(current)}.` : "",
             savedContext(savedItems.getSnapshot()),
@@ -237,7 +320,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         }
       }
     },
-    [classifyOnce, push, shapeshift, show],
+    [classifyOnce, once, push, quick, shapeshift, show],
   );
   useEffect(() => {
     handleRef.current = handle;
@@ -257,6 +340,25 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     setStatus("idle");
   }, []);
 
+  /** Get a connection ready (offer + ICE) on the wake word's mic, so "Hey Jarvis" starts faster. Free: no OpenAI call. */
+  const prewarm = useCallback(async (mic: MediaStream | null) => {
+    if (conn.current || !mic?.getAudioTracks().some((t) => t.readyState === "live")) return;
+    const old = prepared.current;
+    if (old && old.mic === mic && Date.now() - old.at < 60_000) return;
+    prepared.current = null;
+    old?.pc.close();
+    const pc = new RTCPeerConnection();
+    mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
+    const dc = pc.createDataChannel("oai-events");
+    await pc.setLocalDescription(await pc.createOffer());
+    await gathered(pc).catch(() => undefined);
+    if (conn.current) return pc.close();
+    prepared.current = { pc, dc, mic, at: Date.now() };
+  }, []);
+
+  /** Wake Jev up (its first call is slow) while the session is still connecting. */
+  const warm = useCallback(() => void classify("dobrý den").catch(() => null), []);
+
   const start = useCallback(
     async (voice?: string, sharedMic?: MediaStream | null) => {
       if (conn.current) return;
@@ -267,8 +369,13 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
       history.current = [];
       agentThread.current = undefined;
       t0.current = performance.now();
+      warm();
+      const p = prepared.current;
+      prepared.current = null;
+      const ready = p && p.mic === sharedMic && Date.now() - p.at < 90_000 && p.pc.signalingState === "have-local-offer" ? p : null;
+      if (p && !ready) p.pc.close();
       try {
-        const pc = new RTCPeerConnection();
+        const pc = ready?.pc ?? new RTCPeerConnection();
         const audio = new Audio();
         audio.autoplay = true;
         pc.addEventListener("track", (e) => {
@@ -277,8 +384,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         });
         const live = sharedMic?.getAudioTracks().some((t) => t.readyState === "live");
         const mic = live && sharedMic ? sharedMic : await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-        mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
-        const dc = pc.createDataChannel("oai-events");
+        if (!ready) mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
+        const dc = ready?.dc ?? pc.createDataChannel("oai-events");
         const send = (ev: object) => dc.readyState === "open" && dc.send(JSON.stringify(ev));
         let lastActivity = performance.now();
         const idle = setInterval(() => {
@@ -347,21 +454,11 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         dc.addEventListener("close", () => conn.current?.dc === dc && cleanup());
 
         const mark = (what: string) => push("tool", `start: ${what} ${Math.round(performance.now() - t0.current)} ms`);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        if (pc.iceGatheringState !== "complete") {
-          await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error("Vypršelo navazování spojení.")), 10_000);
-            const onState = () => {
-              if (pc.iceGatheringState !== "complete") return;
-              clearTimeout(timeout);
-              pc.removeEventListener("icegatheringstatechange", onState);
-              resolve();
-            };
-            pc.addEventListener("icegatheringstatechange", onState);
-          });
+        if (!ready) {
+          await pc.setLocalDescription(await pc.createOffer());
+          await gathered(pc);
         }
-        mark("ICE hotovo");
+        mark(ready ? "spojení připravené předem" : "ICE hotovo");
         const res = await fetch("/api/session", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -376,7 +473,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         cleanup();
       }
     },
-    [cleanup, enqueue, preview, push],
+    [cleanup, enqueue, preview, push, warm],
   );
 
   /** End gracefully so the session's final usage is reported; hang up anyway after 15 s. */
@@ -389,5 +486,5 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     setTimeout(() => conn.current === c && cleanup(), 15_000);
   }, [cleanup]);
 
-  return { status, log, answer, start, stop };
+  return { status, log, answer, start, stop, prewarm, warm };
 }
