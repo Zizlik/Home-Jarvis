@@ -8,7 +8,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { GoogleSyncPrefs } from "@/lib/google/cards";
 import { notify } from "@/lib/notify";
 
-type Status = { configured: boolean; connected: boolean; email: string | null; keep: boolean; keepError?: string | null; keepClientId?: string | null };
+type Status = {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  needsReconnect?: boolean;
+  keep: boolean;
+  keepError?: string | null;
+  keepClientId?: string | null;
+};
 
 const REASONS: Record<string, string> = {
   access_denied: "přístup nebyl povolen",
@@ -73,10 +81,10 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
           )}
         </p>
         <div className="flex flex-wrap gap-2">
-          {!status.connected && (
+          {(!status.connected || status.needsReconnect) && (
             <Button asChild size="sm">
               <a href="/api/google/login">
-                <Plug /> Připojit Google
+                <Plug /> {status.connected ? "Připojit znovu" : "Připojit Google"}
               </a>
             </Button>
           )}
@@ -88,6 +96,9 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
         </div>
       </div>
 
+      {status.needsReconnect && (
+        <p className="text-xs text-amber-700">Jarvis teď potřebuje o jedno oprávnění víc (pro Keep). Klikni na „Připojit znovu“ a potvrď přístup.</p>
+      )}
       {status.connected && !status.keep && <KeepSetup status={status} />}
 
       <fieldset className="flex flex-col gap-3" disabled={!status.connected}>
@@ -133,27 +144,25 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
   );
 }
 
-/** Keep only works through a Workspace service account with domain-wide delegation. */
+/** Keep only works through a Workspace service account with domain-wide delegation (no key file needed). */
 function KeepSetup({ status }: { status: Status }) {
   const code = (t: string) => <code className="rounded bg-muted px-1 font-mono text-[11px] break-all">{t}</code>;
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-dashed px-4 py-3 text-xs leading-relaxed text-muted-foreground">
       <p className="font-medium text-foreground">Google Keep zatím není povolený</p>
-      {status.keepError === "no-key" ? (
+      {status.keepError === "no-account" ? (
         <ol className="list-decimal space-y-1 ps-4">
-          <li>V Google Cloud Console (stejný projekt) zapni Google Keep API.</li>
-          <li>IAM a správa → Servisní účty → Vytvořit servisní účet (např. „jarvis-keep“), role nejsou potřeba.</li>
-          <li>U účtu Klíče → Přidat klíč → JSON. Stažený soubor nahraj na server jako {code("~/projects/home-jarvis/data/google-service-account.json")}.</li>
-          <li>Obnov tuhle stránku: objeví se číslo, které zadáš v Admin konzoli.</li>
+          <li>V Google Cloud Console (stejný projekt) zapni Google Keep API a IAM Service Account Credentials API.</li>
+          <li>IAM a správa → Servisní účty → Vytvořit servisní účet (např. „jarvis-keep“). Role ani klíč nejsou potřeba.</li>
+          <li>U účtu záložka Oprávnění → Udělit přístup: tvůj účet ({status.email}) s rolí „Service Account Token Creator“.</li>
+          <li>E-mail servisního účtu (…@….iam.gserviceaccount.com) doplň do {code(".env.local")} jako {code("GOOGLE_KEEP_SERVICE_ACCOUNT=")} a restartuj Jarvise.</li>
         </ol>
       ) : (
         <>
-          <p>
-            V Admin konzoli Google Workspace otevři Zabezpečení → Ovládací prvky API → Delegování v rámci celé domény → Přidat nový a zadej:
-          </p>
-          <p>ID klienta: {code(status.keepClientId ?? "")}</p>
+          <p>V Admin konzoli Google Workspace otevři Zabezpečení → Ovládací prvky API → Delegování v rámci celé domény → Přidat nový a zadej:</p>
+          <p>ID klienta: {code(status.keepClientId ?? "(Unique ID servisního účtu z Cloud Console)")}</p>
           <p>Rozsahy OAuth: {code("https://www.googleapis.com/auth/keep")}</p>
-          {status.keepError && <p className="text-amber-700">Teď Google hlásí: {status.keepError}</p>}
+          {status.keepError && status.keepError !== "not-connected" && <p className="text-amber-700">Teď Google hlásí: {status.keepError}</p>}
           <p>Změna se může projevit až za pár minut, pak obnov stránku.</p>
         </>
       )}

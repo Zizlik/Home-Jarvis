@@ -15,6 +15,8 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/tasks",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
+  // Keep without a key file: Google signs the service account's JWT for us (lib/google/keep.ts).
+  "https://www.googleapis.com/auth/iam",
 ];
 
 
@@ -103,7 +105,9 @@ export async function account() {
 export async function status() {
   const s = await load();
   const keep = await keepStatus(s?.email ?? null);
-  return { configured: configured(), connected: !!s, email: s?.email ?? null, keep: keep.ready, keepError: keep.error, keepClientId: keep.clientId };
+  // Signed in before a scope was added (e.g. the IAM one for Keep): sign in again to grant it.
+  const missing = s ? SCOPES.filter((x) => x.startsWith("https://") && !s.scopes.includes(x)) : [];
+  return { configured: configured(), connected: !!s, email: s?.email ?? null, needsReconnect: missing.length > 0, keep: keep.ready, keepError: keep.error, keepClientId: keep.clientId };
 }
 
 export async function disconnect() {
