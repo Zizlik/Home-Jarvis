@@ -213,6 +213,14 @@ export function Meeting() {
       .then((d: { meetings: Archived[] }) => setArchive(d.meetings ?? []))
       .catch(() => undefined);
 
+  // "/meeting?start=1" (Jarvis: "začni meeting") starts recording right away.
+  const startMeeting = meeting.start;
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("start") !== "1") return;
+    window.history.replaceState(null, "", window.location.pathname);
+    void startMeeting();
+  }, [startMeeting]);
+
   useEffect(() => {
     void loadArchive();
     fetch("/api/google/status")

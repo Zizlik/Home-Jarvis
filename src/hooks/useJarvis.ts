@@ -31,6 +31,16 @@ const IDLE_MS = 30_000;
 const TRAILING_COMMAND =
   /^(.*\S)[\s,.;!…]+((?:(?:a|tak|no|díky|dík|diky|super|dobře|dobre)[\s,.!]+)*(?:ulož|uloz|uložit|ulozit|zruš|zrus|zrušit|zrusit|zahoď|zahod|smaž|smaz)(?:\s+(?:to|ji|ho|tu kartu|kartu))?)[\s.!…]*$/iu;
 
+/** "začni meeting", "chci poradu hned", "otevři nastavení": Jarvis's own screens, not cards. */
+const OPEN_TOOL: [RegExp, string, string][] = [
+  [
+    /(?<![\p{L}])(začn\p{L}*|zacn\p{L}*|spusť|spust|zapni|chci|chtěl bych|chtel bych|pusť|pust|nahrávej|nahravej|udělej|udelej|dáme|dame|jdeme na|otevři|otevri)(?![\p{L}]).{0,30}(?<![\p{L}])(meeting\p{L}*|mítink\p{L}*|mitink\p{L}*|porad\p{L}*|zápis z\p{L}*|nahrávání)/iu,
+    "/meeting?start=1",
+    "Spouštím meeting, přepínám na stránku meetingu a nahrávám.",
+  ],
+  [/(?<![\p{L}])(otevři|otevri|ukaž|ukaz|jdi do|přejdi do|prejdi do)(?![\p{L}]).{0,15}(nastavení|nastaveni)/iu, "/nastaveni", "Otevírám nastavení."],
+];
+
 /** Long or rambling dictation gets tidied into card text by Gemini (/api/card). */
 const needsCleanup = (t: string) => t.split(/\s+/).length > 12 || /…|\.\s+\S.*\.\s+\S/.test(t);
 
@@ -108,6 +118,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   const early = useRef(new Map<string, Promise<unknown>>());
   // A peer connection with its offer already gathered, so a session starts ~0.2 s sooner.
   const prepared = useRef<{ pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; at: number } | null>(null);
+  // handle() hangs up before switching to another page.
+  const stopRef = useRef<() => void>(() => undefined);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
   const lastCommand = useRef<{ action: string; at: number; result: string } | null>(null);
   // The agent just read out an email and asked whether to send it: "ano"/"ne" is for the agent.
@@ -175,6 +187,12 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     (utterance: string) => {
       if (speculate.current) clearTimeout(speculate.current);
       speculate.current = setTimeout(async () => {
+        // "začni meeting": act on the words alone, even if Jarvis never delegates it.
+        if (OPEN_TOOL.some(([re]) => re.test(utterance))) {
+          const key = utterance.trim().toLowerCase();
+          if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
+          return;
+        }
         const text = cardText(utterance);
         if (utterance.trim().length < 3) return;
         const r = await classifyOnce(utterance);
@@ -202,6 +220,16 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   /** Do what the user asked; returns what Jarvis should say. */
   const handle = useCallback(
     async (utterance: string): Promise<string> => {
+      const tool = OPEN_TOOL.find(([re]) => re.test(utterance));
+      if (tool) {
+        push("tool", `otevírám ${tool[1]}`);
+        // Let Jarvis say it, then hang up and switch pages (the meeting starts recording there).
+        setTimeout(() => {
+          stopRef.current();
+          window.location.assign(tool[1]);
+        }, 2500);
+        return tool[2];
+      }
       // A dictation that ends with "ulož to": make the card, then save it.
       const tail = utterance.match(TRAILING_COMMAND);
       if (tail && tail[1].split(/\s+/).length >= 2) {
@@ -485,6 +513,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     c.dc.send(JSON.stringify({ type: "session.close" }));
     setTimeout(() => conn.current === c && cleanup(), 15_000);
   }, [cleanup]);
+
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
 
   return { status, log, answer, start, stop, prewarm, warm };
 }
