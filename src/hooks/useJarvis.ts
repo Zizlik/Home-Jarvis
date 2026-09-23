@@ -12,6 +12,7 @@ import { periodFor } from "@/lib/jarvis/period";
 import { parseTextFor } from "@/lib/cs";
 import { parseFor } from "@/lib/parse";
 import { timerLabel, timers } from "@/lib/timers";
+import { getVerbosity, setVerbosity, VERBOSITY_INSTRUCTIONS, VERBOSITY_LABEL, verbosityCommand } from "@/lib/jarvis/verbosity";
 
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
 /** `at`: ms since this conversation started; `ts`: wall clock (Date.now()) when the line began. */
@@ -223,6 +224,16 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
     });
   }, []);
 
+  /** Silent mode: a command is confirmed by a chime, and Jarvis's voice is held back for a moment. */
+  const ack = useCallback(() => {
+    if (getVerbosity() !== "silent") return;
+    chime("ready");
+    const c = conn.current;
+    if (!c) return;
+    c.audio.muted = true;
+    setTimeout(() => conn.current === c && (c.audio.muted = false), 3500);
+  }, []);
+
   /** Cards live in the Shapeshift input and its saved list, exactly as if typed. */
   const show = useCallback((c: Card) => shapeshift.current?.show(c.text, c.intent), [shapeshift]);
 
@@ -322,6 +333,15 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   /** Do what the user asked; returns what Jarvis should say. */
   const handle = useCallback(
     async (utterance: string): Promise<string> => {
+      const v = verbosityCommand(lastSentence(utterance));
+      if (v) {
+        setVerbosity(v);
+        const dc = conn.current?.dc;
+        if (dc?.readyState === "open") dc.send(JSON.stringify({ type: "session.instructions.append", delegation_id: null, content: VERBOSITY_INSTRUCTIONS[v] }));
+        push("tool", `řeč: ${VERBOSITY_LABEL[v]}`);
+        if (v === "silent") ack();
+        return v === "silent" ? "Tichý režim zapnutý. Nic neříkej." : v === "brief" ? "Stručně. Řekni jen „Dobře.“" : "Normálně. Řekni jen „Dobře.“";
+      }
       if (isHangUp(utterance) && (!meeting || /jarvis/i.test(lastSentence(utterance)))) {
         hangUpRef.current();
         return "Uživatel tě vypnul. Nic neříkej.";
@@ -362,6 +382,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         if (last && Date.now() - last.at < 5000 && last.action === (save ? "save" : "discard")) return last.result;
         const ok = save ? shapeshift.current?.save() : (shapeshift.current?.discard(), true);
         const result = ok ? "Hotovo. Řekni jen „Hotovo.“" : "Kartu se nepodařilo uložit.";
+        ack();
         push("tool", `${save ? "uloženo" : "zahozeno"} (bez Jeva)`);
         lastCommand.current = { action: save ? "save" : "discard", at: Date.now(), result };
         return result;
@@ -421,6 +442,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         if (t.seconds) {
           timers.add(timerLabel(t.label), t.seconds);
           shapeshift.current?.discard();
+          ack();
           return `Časovač ${timerLabel(t.label)} běží, je vidět nahoře. Až doběhne, ozvu se.`;
         }
       }
@@ -429,6 +451,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         const t = parseFor("timer", parseTextFor("timer", cardText(utterance)));
         if (t.seconds) {
           timers.add(timerLabel(t.label), t.seconds);
+          ack();
           return `Časovač ${timerLabel(t.label)} na ${t.seconds >= 60 ? `${Math.round(t.seconds / 60)} min` : `${t.seconds} s`} běží, je vidět na obrazovce. Až doběhne, ozvu se.`;
         }
       }
@@ -445,6 +468,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
               show(c);
             }
           }
+          ack();
           return `Karta je na obrazovce: ${describe(c)}. Řekni to jednou krátkou větou a na nic se neptej (uložit ji umí uživatel slovem „ulož“).`;
         }
         case "update": {
@@ -464,6 +488,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           if (!current) {
             const c = buildCard(cardText(utterance), r);
             show(c);
+            ack();
             return `Karta je na obrazovce: ${describe(c)}. Řekni to jednou krátkou větou a na nic se neptej.`;
           }
           const revised = await once("revise", utterance, () => postCard({ card: current.text, change: utterance }));
@@ -471,10 +496,12 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           const r2 = await classifyOnce(revised);
           const c = r2 ? buildCard(revised, r2) : { ...current, text: revised };
           show(c);
+          ack();
           return `Karta upravená, zatím neuložená. ${describe(c)}.`;
         }
         case "save": {
           if (!current || !shapeshift.current?.save()) return remember("Žádná karta k uložení není.");
+          ack();
           return remember("Uloženo. Řekni jen „Hotovo.“");
         }
         case "discard": {
@@ -484,6 +511,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           }
           if (!current) return remember(hasContent(utterance) ? "Takovou uloženou kartu nevidím." : "Žádná karta tu není.");
           shapeshift.current?.discard();
+          ack();
           return remember("Zahozeno. Řekni jen „Hotovo.“");
         }
         default: {
@@ -523,7 +551,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         }
       }
     },
-    [classifyOnce, meeting, once, push, quick, shapeshift, show],
+    [ack, classifyOnce, meeting, once, push, quick, shapeshift, show],
   );
   useEffect(() => {
     handleRef.current = handle;
@@ -612,6 +640,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
             case "session.started":
               chime("ready");
               if (opts?.instructions) send({ type: "session.instructions.append", delegation_id: null, content: opts.instructions });
+              if (!meetingRef.current) send({ type: "session.instructions.append", delegation_id: null, content: VERBOSITY_INSTRUCTIONS[getVerbosity()] });
               send({ type: "session.thinking.append", delegation_id: null, content: opts?.context ?? savedContext(savedItems.getSnapshot()) });
               setStatus("live");
               push("info", "Spojeno, mluv.");

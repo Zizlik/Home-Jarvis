@@ -2,7 +2,7 @@
 
 import { ArrowLeft, KeyRound, LibraryBig, Loader2, Pencil, Plug, Plus, Server, Trash2, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import { CONNECTORS, type ConnectorId, DEFAULT_AGENT_MODEL, VOICES } from "@/lib
 import { cn } from "@/lib/utils";
 import { GoogleSettings } from "./GoogleSettings";
 import { McpCatalog } from "./McpCatalog";
+import { getVerbosity, setVerbosity, subscribeVerbosity, type Verbosity, VERBOSITY_LABEL } from "@/lib/jarvis/verbosity";
 
 type McpItem = PublicSettings["mcp"][number] & { clearAuthorization?: boolean };
 type State = Omit<PublicSettings, "mcp"> & { mcp: McpItem[] };
@@ -231,6 +232,10 @@ export function Settings() {
                 ))}
               </SelectContent>
             </Select>
+          </Section>
+
+          <Section title="Kolik Jarvis mluví" hint="Platí v tomto prohlížeči. Hlasem: „mluv méně“, „mlč“, „mluv normálně“.">
+            <VerbosityPicker />
           </Section>
 
           <Section title="Model pro otázky a MCP" hint="Model, který odpovídá na otázky a pracuje s MCP servery, když na to nestačí karta.">
@@ -679,5 +684,36 @@ function Linkified({ text }: { text: string }) {
         );
       })}
     </>
+  );
+}
+
+const VERBOSITY_HINT: Record<Verbosity, string> = {
+  normal: "krátce a věcně",
+  brief: "na povely jen „Hotovo“, na otázky jedna věta",
+  silent: "povely jen pípnutím, mluví jen při odpovědích",
+};
+
+/** Client-only: how much Jarvis talks (saved in this browser). */
+function VerbosityPicker() {
+  const value = useSyncExternalStore(subscribeVerbosity, getVerbosity, () => "normal" as Verbosity);
+  return (
+    <div role="radiogroup" aria-label="Kolik Jarvis mluví" className="flex flex-col gap-2 sm:flex-row">
+      {(Object.keys(VERBOSITY_LABEL) as Verbosity[]).map((v) => (
+        <button
+          key={v}
+          type="button"
+          role="radio"
+          aria-checked={value === v}
+          onClick={() => setVerbosity(v)}
+          className={cn(
+            "flex-1 rounded-xl border px-3 py-2 text-start text-sm transition-colors",
+            value === v ? "border-foreground bg-foreground text-background" : "hover:bg-muted",
+          )}
+        >
+          <span className="font-medium">{VERBOSITY_LABEL[v]}</span>
+          <span className={cn("block text-xs", value === v ? "opacity-80" : "text-muted-foreground")}>{VERBOSITY_HINT[v]}</span>
+        </button>
+      ))}
+    </div>
   );
 }
