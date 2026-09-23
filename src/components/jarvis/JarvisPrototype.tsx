@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Mic, Square } from "lucide-react";
+import { Loader2, Mic, Settings, Square } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { type LogLine, useJarvis } from "@/hooks/useJarvis";
 import { cn } from "@/lib/utils";
@@ -17,11 +17,12 @@ const KIND: Record<LogLine["kind"], string> = {
 
 /** Step 1: talk to GPT-Live in Czech and watch the card tools run. The full card UI comes next. */
 export function JarvisPrototype() {
-  const { status, log, card, saved, start, stop } = useJarvis();
+  const { status, log, card, draft, saved, answer, start, stop } = useJarvis();
   const voice = useSyncExternalStore(
     subscribeNoop,
-    () => new URLSearchParams(window.location.search).get("voice") ?? "marin",
-    () => "marin",
+    // ?voice= overrides the saved voice, for trying voices out.
+    () => new URLSearchParams(window.location.search).get("voice") ?? "",
+    () => "",
   );
   const busy = status === "connecting" || status === "closing";
 
@@ -29,12 +30,12 @@ export function JarvisPrototype() {
     <main className="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-4 pt-[10vh] pb-24">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Jarvis</h1>
-          <p className="text-sm text-muted-foreground">Prototyp · gpt-live-1 · hlas {voice}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Jarvis <a href="/nastaveni" aria-label="Nastavení" className="ms-1 inline-flex align-middle text-muted-foreground hover:text-foreground"><Settings className="size-4" /></a></h1>
+          <p className="text-sm text-muted-foreground">Prototyp · gpt-live-1 · hlas {voice || "z nastavení"}</p>
         </div>
         <button
           type="button"
-          onClick={() => (status === "idle" ? start(voice) : stop())}
+          onClick={() => (status === "idle" ? start(voice || undefined) : stop())}
           disabled={busy}
           aria-label={status === "live" ? "Ukončit rozhovor" : "Začít mluvit"}
           className={cn(
@@ -51,7 +52,10 @@ export function JarvisPrototype() {
       <section aria-label="Karta" className="rounded-2xl border bg-card p-5 shadow-sm">
         {card ? (
           <>
-            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{card.label}</p>
+            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              {card.label}
+              {draft && " · poslouchám…"}
+            </p>
             <p className="mt-1 text-lg font-medium" data-testid="card-summary">{card.summary}</p>
             <p className="mt-2 text-xs text-muted-foreground">
               „{card.text}“ · jistota {Math.round(card.confidence * 100)} %
@@ -61,6 +65,12 @@ export function JarvisPrototype() {
           <p className="text-sm text-muted-foreground">Řekni třeba „Zapiš večeři s Petrem v pátek v osm“.</p>
         )}
       </section>
+
+      {answer && (
+        <section aria-label="Odpověď" className="rounded-2xl border bg-muted/40 p-5 text-[15px] leading-relaxed">
+          {answer}
+        </section>
+      )}
 
       {saved.length > 0 && (
         <section aria-label="Uložené" className="flex flex-col gap-2">

@@ -1,70 +1,147 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { buildCard, type Card, describe } from "@/lib/jarvis/cards";
+import { buildCard, type Card, cardText, classify, decide } from "@/lib/jarvis/cards";
+import type { IntentResult } from "@/lib/jev/types";
 
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
 export type LogLine = { at: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
 
-type Pending = { callId: string; name: string; args: string };
+type Conn = { pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; audio: HTMLAudioElement };
 
 /**
- * GPT-Live over WebRTC: the mic and Jarvis's voice on media tracks, events on the
- * "oai-events" data channel. Card tools run here, in the browser, on the same
- * Jev + Czech parser pipeline as typing, and their results go back to the backend.
+ * GPT-Live over WebRTC with client delegation: Jarvis talks, the app does the work.
+ * While the user speaks, Jev reads the running transcript so the card forms live.
+ * When Jarvis delegates, Jev's answer decides what to do (new card, change, save,
+ * discard) in ~0.3 s; only questions go to a model (/api/agent, with MCP tools).
  */
 export function useJarvis() {
   const [status, setStatus] = useState<JarvisStatus>("idle");
   const [log, setLog] = useState<LogLine[]>([]);
   const [card, setCard] = useState<Card | null>(null);
+  const [draft, setDraft] = useState(false);
   const [saved, setSaved] = useState<Card[]>([]);
-  const conn = useRef<{ pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; audio: HTMLAudioElement } | null>(null);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const conn = useRef<Conn | null>(null);
   const cardRef = useRef<Card | null>(null);
   const t0 = useRef(0);
+  // The user's words since Jarvis last spoke: what a delegation is about.
+  const turn = useRef({ text: "", jarvisSpoke: false });
+  const history = useRef<string[]>([]);
+  const agentThread = useRef<string | undefined>(undefined);
+  const jev = useRef(new Map<string, Promise<IntentResult | null>>());
+  const speculate = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const push = useCallback((kind: LogLine["kind"], text: string) => {
     setLog((l) => {
-      // Transcript deltas extend the last line of the same speaker.
       const last = l[l.length - 1];
-      if ((kind === "you" || kind === "jarvis") && last?.kind === kind && !text.startsWith("\n")) {
-        return [...l.slice(0, -1), { ...last, text: last.text + text }];
-      }
-      return [...l, { at: Math.round(performance.now() - t0.current), kind, text: text.replace(/^\n/, "") }];
+      if ((kind === "you" || kind === "jarvis") && last?.kind === kind) return [...l.slice(0, -1), { ...last, text: last.text + text }];
+      return [...l, { at: Math.round(performance.now() - t0.current), kind, text }];
     });
   }, []);
 
-  const show = useCallback((c: Card | null) => {
+  const show = useCallback((c: Card | null, isDraft = false) => {
     cardRef.current = c;
     setCard(c);
+    setDraft(isDraft);
   }, []);
 
-  const runTool = useCallback(
-    async ({ name, args }: Pending): Promise<unknown> => {
-      const a = (JSON.parse(args || "{}") ?? {}) as { text?: string };
-      switch (name) {
-        case "create_card":
-        case "update_card": {
-          if (!a.text) return { chyba: "chybí text" };
-          const c = await buildCard(a.text);
-          if (!c) return { chyba: "kartu se nepodařilo vytvořit" };
+  /** Jev once per distinct text: the speculative call and the delegation share it. */
+  const classifyOnce = useCallback((text: string) => {
+    const key = text.trim().toLowerCase();
+    let p = jev.current.get(key);
+    if (!p) {
+      p = classify(text).catch(() => null);
+      jev.current.set(key, p);
+      if (jev.current.size > 50) jev.current.delete(jev.current.keys().next().value!);
+    }
+    return p;
+  }, []);
+
+  /** While the user is still talking: preview the card they are dictating. */
+  const preview = useCallback(
+    (utterance: string) => {
+      if (speculate.current) clearTimeout(speculate.current);
+      speculate.current = setTimeout(async () => {
+        const text = cardText(utterance);
+        if (text.length < 3) return;
+        const r = await classifyOnce(utterance);
+        if (!r || turn.current.text !== utterance) return; // stale
+        const d = decide(r);
+        if (d.action === "create" && r.intent.value !== "none") show(buildCard(text, r), true);
+      }, 250);
+    },
+    [classifyOnce, show],
+  );
+
+  /** Do what the user asked; returns what Jarvis should say. */
+  const handle = useCallback(
+    async (utterance: string): Promise<string> => {
+      const r = await classifyOnce(utterance);
+      if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
+      const { action } = decide(r);
+      push("tool", `Jev: ${action} · ${r.intent.value} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
+      const current = cardRef.current;
+      // The card's summary plus the words it was made from, so Jarvis can mention people, place, etc.
+      const describe = (c: Card) => `${c.label}: ${c.summary} (z textu „${c.text}“)`;
+
+      switch (action) {
+        case "create": {
+          const c = buildCard(cardText(utterance), r);
           show(c);
-          return describe(c);
+          return `Zobrazená karta, zatím neuložená. ${describe(c)}.`;
         }
-        case "save_card": {
-          const c = cardRef.current;
-          if (!c) return { chyba: "žádná karta není zobrazená" };
-          setSaved((s) => [c, ...s]);
-          show(null);
-          return { uloženo: describe(c) };
+        case "update": {
+          if (!current) {
+            const c = buildCard(cardText(utterance), r);
+            show(c);
+            return `Zobrazená karta, zatím neuložená. ${describe(c)}.`;
+          }
+          const res = await fetch("/api/card", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ card: current.text, change: utterance }),
+          });
+          const body = (await res.json().catch(() => ({}))) as { text?: string };
+          if (!body.text) return "Změnu se nepodařilo použít, řekni ji prosím jinak.";
+          const r2 = await classifyOnce(body.text);
+          const c = r2 ? buildCard(body.text, r2) : { ...current, text: body.text };
+          show(c);
+          return `Karta upravená, zatím neuložená. ${describe(c)}.`;
         }
-        case "discard_card":
+        case "save": {
+          if (!current) return "Žádná karta k uložení není.";
+          setSaved((s) => [current, ...s]);
           show(null);
-          return { zahozeno: true };
-        default:
-          return { chyba: `neznámý nástroj ${name}` };
+          return `Uloženo. ${describe(current)}.`;
+        }
+        case "discard": {
+          if (!current) return "Žádná karta tu není.";
+          show(null);
+          return "Karta zahozená.";
+        }
+        default: {
+          const context = [
+            current ? `Na obrazovce je karta ${describe(current)}.` : "",
+            history.current.length ? `Poslední rozhovor:\n${history.current.slice(-6).join("\n")}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          const res = await fetch("/api/agent", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ question: utterance, context, previousResponseId: agentThread.current }),
+          });
+          const body = (await res.json().catch(() => ({}))) as { answer?: string; responseId?: string; tools?: string[]; error?: string };
+          if (!body.answer) return body.error ?? "Na tohle teď nedokážu odpovědět.";
+          agentThread.current = body.responseId;
+          if (body.tools?.length) push("tool", `agent: ${body.tools.join(", ")}`);
+          setAnswer(body.answer);
+          return body.answer;
+        }
       }
     },
-    [show],
+    [classifyOnce, push, show],
   );
 
   const cleanup = useCallback(() => {
@@ -78,10 +155,14 @@ export function useJarvis() {
   }, []);
 
   const start = useCallback(
-    async (voice = "marin") => {
+    async (voice?: string) => {
       if (conn.current) return;
       setStatus("connecting");
       setLog([]);
+      setAnswer(null);
+      turn.current = { text: "", jarvisSpoke: false };
+      history.current = [];
+      agentThread.current = undefined;
       t0.current = performance.now();
       try {
         const pc = new RTCPeerConnection();
@@ -95,10 +176,8 @@ export function useJarvis() {
         mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
         const dc = pc.createDataChannel("oai-events");
         conn.current = { pc, dc, mic, audio };
-
-        // Function calls of one backend response; results go back together, then the response continues.
-        const calls = new Map<string, Pending[]>();
         const send = (ev: object) => dc.readyState === "open" && dc.send(JSON.stringify(ev));
+        let spoken = "";
 
         dc.addEventListener("message", async ({ data }) => {
           const ev = JSON.parse(data as string);
@@ -107,38 +186,38 @@ export function useJarvis() {
               setStatus("live");
               push("info", "Spojeno, mluv.");
               break;
-            case "session.input_transcript.delta":
-              push("you", ev.delta ?? "");
-              break;
-            case "session.output_transcript.delta":
-              push("jarvis", ev.delta ?? "");
-              break;
-            case "session.delegation.created":
-              push("info", "Jarvis předává úkol backendu…");
-              break;
-            case "response.event": {
-              const inner = ev.event;
-              const key = ev.delegation_id as string;
-              if (inner?.type === "response.output_item.done" && inner.item?.type === "function_call") {
-                const list = calls.get(key) ?? [];
-                list.push({ callId: inner.item.call_id, name: inner.item.name, args: inner.item.arguments });
-                calls.set(key, list);
-              } else if (inner?.type === "response.completed" || inner?.type === "response.done") {
-                const list = calls.get(key) ?? [];
-                calls.delete(key);
-                if (!list.length) break;
-                for (const call of list) {
-                  push("tool", `${call.name}(${call.args})`);
-                  const result = await runTool(call);
-                  push("tool", `→ ${JSON.stringify(result)}`);
-                  send({ type: "response.item.create", item: { type: "function_call_output", call_id: call.callId, output: JSON.stringify(result) } });
-                }
-                send({ type: "response.create" });
+            case "session.input_transcript.delta": {
+              const t = turn.current;
+              if (t.jarvisSpoke) {
+                if (spoken) history.current.push(`Jarvis: ${spoken.trim()}`);
+                spoken = "";
+                turn.current = { text: "", jarvisSpoke: false };
               }
+              turn.current.text += ev.delta ?? "";
+              push("you", ev.delta ?? "");
+              preview(turn.current.text);
+              break;
+            }
+            case "session.output_transcript.delta":
+              if (!turn.current.jarvisSpoke && turn.current.text.trim()) history.current.push(`Uživatel: ${turn.current.text.trim()}`);
+              turn.current.jarvisSpoke = true;
+              spoken += ev.delta ?? "";
+              // Voice cues like "[clear throat]" are for the speech, not the transcript.
+              push("jarvis", (ev.delta ?? "").replace(/\s*\[[^\]]*\]\s*/g, " "));
+              break;
+            case "session.delegation.created": {
+              const id = ev.delegation?.id as string;
+              // The words may still be arriving: give the transcript a moment.
+              for (let i = 0; i < 6 && !turn.current.text.trim(); i++) await new Promise((r) => setTimeout(r, 50));
+              const utterance = turn.current.text.trim();
+              push("tool", `delegace: „${utterance}“`);
+              const result = utterance ? await handle(utterance) : "Nerozuměl jsem, zopakuj to prosím.";
+              push("tool", `→ ${result}`);
+              send({ type: "session.commentary.append", delegation_id: id, content: result.slice(0, 1500) });
               break;
             }
             case "session.closed":
-              push("info", `Konec (${ev.reason ?? "?"}). Využití: ${JSON.stringify(ev.usage ?? {})}`);
+              push("info", `Konec (${ev.reason ?? "?"}), ${ev.usage?.seconds ?? "?"} s hovoru.`);
               cleanup();
               break;
             case "error":
@@ -175,7 +254,7 @@ export function useJarvis() {
         cleanup();
       }
     },
-    [cleanup, push, runTool],
+    [cleanup, handle, preview, push],
   );
 
   /** End gracefully so the session's final usage is reported; hang up anyway after 15 s. */
@@ -188,5 +267,5 @@ export function useJarvis() {
     setTimeout(() => conn.current === c && cleanup(), 15_000);
   }, [cleanup]);
 
-  return { status, log, card, saved, start, stop };
+  return { status, log, card, draft, saved, answer, start, stop };
 }

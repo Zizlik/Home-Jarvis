@@ -95,6 +95,15 @@ export const questions = {
     break: "A rest or break",
     stopwatch: "Counting up with no end time",
   }),
+  // ── Jarvis: what to do with the card ───────────────────────
+  action: choice("What does the person want the assistant to do right now", {
+    create: "Write down, calculate or convert something new: an event, reminder, list, expense, timer, conversion, math, note",
+    update: "Change the item that is already shown, e.g. move it to another day or time, add or remove something",
+    save: "Confirm or save the item that is shown",
+    discard: "Cancel, delete or throw away the item that is shown",
+    ask: "Ask a question or request information that needs looking up, e.g. weather, calendar, email, news",
+    chat: "Greeting, thanks or small talk with no task",
+  }),
   hasExplicitOptions: noul("The text names two or more explicit options to pick between"),
   isShoppingList: noul("The listed items are things to buy"),
 };

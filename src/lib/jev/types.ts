@@ -40,6 +40,9 @@ export const EXPENSE_CATEGORIES = [
 ] as const;
 export const COLOR_MOODS = ["warm", "cool", "neutral", "vivid", "pastel", "dark"] as const;
 export const TIMER_KINDS = ["countdown", "focus", "break", "stopwatch"] as const;
+/** Jarvis: what to do with the card (asked alongside the intent). */
+export const ACTIONS = ["create", "update", "save", "discard", "ask", "chat"] as const;
+export type Action = (typeof ACTIONS)[number];
 
 export type Tone = (typeof TONES)[number];
 export type EventMode = (typeof EVENT_MODES)[number];
@@ -91,6 +94,7 @@ export const intentResultSchema = z.object({
   cached: z.boolean().optional(),
   error: z.boolean().optional(),
   source: z.enum(["jev", "mock"]).optional(),
+  action: answerSchema(ACTIONS).optional(),
 });
 export type IntentResult = z.infer<typeof intentResultSchema>;
 

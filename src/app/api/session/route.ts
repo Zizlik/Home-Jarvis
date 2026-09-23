@@ -1,10 +1,10 @@
 import OpenAI from "openai";
 import { sessionConfig } from "@/lib/jarvis/config";
 import { LRU } from "@/lib/lru";
+import { readSettings, VOICES } from "@/lib/settings";
 
 export const runtime = "nodejs";
 
-const VOICES = new Set(["marin", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa", "tempo", "beacon", "delta", "cinder"]);
 /** Voice sessions per client IP per minute: they cost money. */
 const LIMIT = 6;
 const hits = new LRU<string, number[]>(1000);
@@ -21,7 +21,8 @@ export async function POST(request: Request) {
   if (typeof body?.sdp !== "string" || !body.sdp.trim() || body.sdp.length > 64_000) {
     return Response.json({ error: "Chybí SDP nabídka." }, { status: 400 });
   }
-  const voice = typeof body.voice === "string" && VOICES.has(body.voice) ? body.voice : "marin";
+  // ?voice= in the URL wins over the saved setting, for trying voices out.
+  const voice = typeof body.voice === "string" && (VOICES as readonly string[]).includes(body.voice) ? body.voice : (await readSettings()).voice;
 
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "local";
   const now = Date.now();

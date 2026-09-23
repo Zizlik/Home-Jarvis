@@ -68,6 +68,7 @@ export async function classifyWithJev(text: string, signal?: AbortSignal): Promi
       hasExplicitOptions: a.hasExplicitOptions.noul,
       isShoppingList: a.isShoppingList.noul,
     },
+    action: answer(a.action),
     latencyMs,
     questionCount: QUESTION_COUNT,
     model: res.model,

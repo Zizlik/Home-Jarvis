@@ -45,3 +45,6 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 *.pem
+
+# Jarvis settings (MCP tokens live here)
+/data/

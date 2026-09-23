@@ -57,3 +57,30 @@ export async function normalizeCzech(text: string, signal?: AbortSignal): Promis
   const out = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
   return out ? out.replace(/^["'„“]+|["'“”]+$/g, "").split("\n")[0].trim() : null;
 }
+
+const REVISE = `Dostaneš text karty (poznámka, událost, nákupní seznam…) a změnu, kterou uživatel řekl. Vrať CELÝ nový text karty česky, stejným stylem jako původní, jen s požadovanou změnou. Nic dalšího nepiš, žádné uvozovky ani vysvětlení.
+Příklady:
+Karta: večeře s Petrem v pátek v 8 večer přes zoom | Změna: posuň to na sobotu → večeře s Petrem v sobotu v 8 večer přes zoom
+Karta: koupit mléko, rohlíky a máslo | Změna: přidej tam ještě sýr → koupit mléko, rohlíky, máslo a sýr
+Karta: připomeň mi zítra zavolat mámě | Změna: vlastně až v 6 večer → připomeň mi zítra v 6 večer zavolat mámě`;
+
+/** Apply a spoken change to a card's text ("posuň to na sobotu"). */
+export async function reviseCard(card: string, change: string, signal?: AbortSignal): Promise<string | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return null;
+  const timeout = AbortSignal.timeout(4000);
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: REVISE }] },
+      contents: [{ role: "user", parts: [{ text: `Karta: ${card} | Změna: ${change}` }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: 256, thinkingConfig: { thinkingBudget: 0 } },
+    }),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+  const out = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
+  return out ? out.replace(/^["'„“]+|["'“”]+$/g, "").split("\n")[0].trim() : null;
+}
