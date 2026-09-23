@@ -295,7 +295,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         }
         // "ulož to" / "přidat" / "zahoď to" with a card on screen: do it now, from the words alone.
         const shownNow = shapeshift.current?.current();
-        if (!meetingRef.current && shownNow?.text.trim() && shownNow.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
+        if (!meetingRef.current && !agentAsked.current && shownNow?.text.trim() && shownNow.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
           const key = utterance.trim().toLowerCase();
           if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
           return;
@@ -376,7 +376,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
       }
       // With a card on screen, "ulož to" / "přidat" / "ano" saves it and "zahoď to" discards it: no Jev needed.
       const onScreen = shapeshift.current?.current();
-      if (!meeting && onScreen?.text.trim() && onScreen.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
+      if (!meeting && !agentAsked.current && onScreen?.text.trim() && onScreen.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
         const save = onlyWords(utterance, SAVE_WORD);
         const last = lastCommand.current;
         if (last && Date.now() - last.at < 5000 && last.action === (save ? "save" : "discard")) return last.result;
@@ -418,6 +418,9 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
       const saved = action === "update" || action === "discard" ? findSaved(utterance, savedItems.getSnapshot()) : null;
       const aimsAtSaved = !!saved && (!current || (hasContent(utterance) && saved.score > overlap(utterance, current.text)));
       const describeSaved = (x: SavedItem) => `${registry[x.intent].label}: ${x.summary}`;
+      // "zruš mi zítra všechny plány", "smaž úkol X": not a card here, so it's for Google (the agent, which asks first).
+      const aboutGoogle = /(?<![\p{L}])(kalendář\p{L}*|kalendar\p{L}*|plán\p{L}*|plan\p{L}*|událost\p{L}*|udalost\p{L}*|schůzk\p{L}*|schuzk\p{L}*|meeting\p{L}*|termín\p{L}*|úkol\p{L}*|ukol\p{L}*|tasks?)(?![\p{L}])/iu.test(utterance);
+      const toAgent = (action === "discard" || action === "update") && !aimsAtSaved && ((!current && hasContent(utterance)) || (aboutGoogle && !current));
 
       // On a meeting, a calculation or conversion is answered, not written down.
       if (meeting && action === "create" && ANSWER_CARDS.has(r.intent.value)) {
@@ -461,7 +464,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         }
       }
 
-      switch (action) {
+      switch (toAgent ? "ask" : action) {
         case "create": {
           let c = buildCard(cardText(utterance), r);
           show(c);
@@ -523,7 +526,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           const quickTopic = topicOf(r, utterance);
           // On a meeting, "co jsme řešili" means this meeting, not the archive.
           const topic = meeting && quickTopic === "meetings" ? null : quickTopic;
-          if (!replyToAgent && topic) {
+          if (!replyToAgent && !toAgent && topic) {
             const facts = await quick(utterance, topic);
             if (facts) {
               push("tool", `rychlá odpověď: ${topic}`);
@@ -548,7 +551,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           const body = (await res.json().catch(() => ({}))) as { answer?: string; responseId?: string; tools?: string[]; error?: string };
           if (!body.answer) return body.error ?? "Na tohle teď nedokážu odpovědět.";
           agentThread.current = body.responseId;
-          agentAsked.current = !!body.tools?.includes("google.gmail_prepare");
+          // Jarvis read out an e-mail or what it would delete and asked: "ano" / "ne" goes back to the agent.
+          agentAsked.current = !!body.tools?.some((t) => t === "google.gmail_prepare" || t === "google.delete_prepare");
           if (body.tools?.length) push("tool", `agent: ${body.tools.join(", ")}`);
           setAnswer(body.answer);
           meeting?.activity({ kind: "answer", question: utterance, summary: body.answer });

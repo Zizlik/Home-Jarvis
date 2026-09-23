@@ -78,6 +78,31 @@ export const GOOGLE_TOOLS: OpenAI.Responses.FunctionTool[] = [
   },
   {
     type: "function",
+    name: "delete_prepare",
+    description:
+      "Najde události v kalendáři nebo úkoly v Tasks, které chce uživatel smazat. Nic nesmaže: vrátí id a seznam. Seznam uživateli přečti a zeptej se, jestli je opravdu smazat.",
+    strict: true,
+    parameters: {
+      type: "object",
+      properties: {
+        what: { type: "string", enum: ["calendar", "tasks"], description: "calendar = události, tasks = úkoly" },
+        from: { type: ["string", "null"], description: "Kalendář: začátek období (ISO 8601 s časovou zónou), jinak null" },
+        to: { type: ["string", "null"], description: "Kalendář: konec období (ISO 8601 s časovou zónou), jinak null" },
+        query: { type: ["string", "null"], description: "Hledaný text v názvu (např. „porada“), nebo null pro všechno v období" },
+      },
+      required: ["what", "from", "to", "query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "delete_confirmed",
+    description: "Smaže dříve připravené položky. Jen když uživatel v POSLEDNÍ větě výslovně potvrdil smazání.",
+    strict: true,
+    parameters: { type: "object", properties: { delete_id: str("Id z delete_prepare") }, required: ["delete_id"], additionalProperties: false },
+  },
+  {
+    type: "function",
     name: "gmail_prepare",
     description: "Připraví e-mail k odeslání. Nic neodešle: vrátí id konceptu. Obsah přečti uživateli a zeptej se, jestli ho má odeslat.",
     strict: true,
@@ -102,10 +127,12 @@ type KeepNote = { trashed?: boolean; title?: string; updateTime?: string; body?:
 const TASKS = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks";
 
 type Draft = { to: string; subject: string; body: string; at: number };
+type PendingDelete = { what: "calendar" | "tasks"; items: { id: string; title: string }[]; at: number };
+const deletions = new Map<string, PendingDelete>();
 const drafts = new Map<string, Draft>();
 
 /** "ano, pošli to" and friends: the only way a prepared email gets sent. */
-const CONFIRM = /(?<![\p{L}])(ano|jo|jasně|jasne|pošli|posli|odešli|odesli|potvrzuj[iu]|můžeš|muzes|klidně|klidne|souhlasím|souhlasim)(?![\p{L}])/iu;
+const CONFIRM = /(?<![\p{L}])(ano|jo|jasně|jasne|pošli|posli|odešli|odesli|potvrzuj[iu]|potvrď|potvrd|můžeš|muzes|klidně|klidne|souhlasím|souhlasim|smaž|smaz|smazat|vymaž|vymaz|zruš|zrus)(?![\p{L}])/iu;
 const DENY = /(?<![\p{L}])(ne|neposílej|neposilej|počkej|pockej|zruš|zrus|stop)(?![\p{L}])/iu;
 
 const header = (m: { payload?: { headers?: { name: string; value: string }[] } }, name: string) =>
@@ -180,6 +207,37 @@ export async function runGoogleTool(name: string, args: Record<string, unknown>,
         }))
         .filter((n) => !q || JSON.stringify(n).toLowerCase().includes(q))
         .slice(0, 20);
+    }
+    case "delete_prepare": {
+      const q = typeof args.query === "string" && args.query.trim() ? args.query.trim().toLowerCase() : null;
+      let items: { id: string; title: string; when?: string }[] = [];
+      if (args.what === "calendar") {
+        if (typeof args.from !== "string" || typeof args.to !== "string") return { chyba: "U kalendáře je potřeba období (from, to)." };
+        const p = new URLSearchParams({ timeMin: args.from, timeMax: args.to, singleEvents: "true", orderBy: "startTime", maxResults: "50", timeZone: TZ });
+        const r = await google<{ items?: { id: string; summary?: string; start?: { dateTime?: string; date?: string } }[] }>(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${p}`);
+        items = (r.items ?? []).map((e) => ({ id: e.id, title: e.summary ?? "(bez názvu)", when: e.start?.dateTime ?? e.start?.date }));
+      } else {
+        const r = await google<{ items?: Task[] }>(`${TASKS}?showCompleted=false&maxResults=100`);
+        items = (r.items ?? []).map((t) => ({ id: t.id, title: t.title ?? "(bez názvu)", when: t.due?.slice(0, 10) }));
+      }
+      if (q) items = items.filter((i) => i.title.toLowerCase().includes(q));
+      if (!items.length) return { nalezeno: 0, zpráva: "Nic takového tam není." };
+      const id = randomUUID().slice(0, 8);
+      deletions.set(id, { what: args.what as "calendar" | "tasks", items, at: Date.now() });
+      return { delete_id: id, stav: "připraveno, NIC NESMAZÁNO", počet: items.length, položky: items.map((i) => ({ název: i.title, kdy: i.when })), další_krok: "přečti uživateli, co smažeš, a zeptej se" };
+    }
+    case "delete_confirmed": {
+      const d = deletions.get(String(args.delete_id));
+      if (!d || Date.now() - d.at > 15 * 60_000) return { chyba: "Nic k smazání není připravené nebo to vypršelo, najdi položky znovu." };
+      // Enforced here, not left to the model: the user's latest words must say yes.
+      if (!CONFIRM.test(question) || DENY.test(question)) return { chyba: "Uživatel smazání výslovně nepotvrdil. Zeptej se ho, jestli to smazat." };
+      let done = 0;
+      for (const i of d.items) {
+        const url = d.what === "calendar" ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(i.id)}` : `${TASKS}/${encodeURIComponent(i.id)}`;
+        await google(url, { method: "DELETE" }).then(() => done++).catch(() => undefined);
+      }
+      deletions.delete(String(args.delete_id));
+      return { stav: "smazáno", počet: done, z: d.items.length };
     }
     case "gmail_prepare": {
       const id = randomUUID().slice(0, 8);
