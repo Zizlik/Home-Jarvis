@@ -15,6 +15,7 @@ export function TodoList({ data, interactive }: CardProps<TodoData>) {
 
   return (
     <ul className="flex flex-col">
+      {data.title && <li className="pb-1 text-[15px] font-medium">{data.title}</li>}
       {data.items.map((item, i) => {
         const checked = Boolean(done[item]);
         const id = `todo-${i}-${item}`;

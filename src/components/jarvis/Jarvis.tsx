@@ -61,7 +61,7 @@ export function Jarvis() {
   const [transcript, toggleTranscript] = usePref(TRANSCRIPT_KEY);
   const [wakeOn, toggleWake] = usePref(WAKE_KEY);
   const wake = useWakeWord(wakeOn, status !== "idle", (mic) => {
-    chime();
+    chime("heard");
     void start(voice || undefined, mic);
   });
 
@@ -146,8 +146,10 @@ export function Jarvis() {
       </header>
 
       <Shapeshift controllerRef={shapeshift} inputAction={talk}>
-        {answer && (
-          <section aria-label="Odpověď Jarvise" className="mt-4 rounded-2xl border bg-card p-5 text-[15px] leading-relaxed shadow-sm">
+        {/* Lives only during the conversation; the transcript keeps it afterwards. */}
+        {answer && status !== "idle" && (
+          <section aria-label="Odpověď Jarvise" className="mt-4 rounded-2xl bg-muted/60 px-4 py-3 text-[15px] leading-relaxed">
+            <span className="me-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">Jarvis</span>
             {answer}
           </section>
         )}

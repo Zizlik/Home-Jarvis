@@ -1,18 +1,22 @@
-import { reviseCard } from "@/lib/normalize";
+import { cleanCard, reviseCard } from "@/lib/normalize";
 
 export const runtime = "nodejs";
 
-/** "posuň to na sobotu" + the shown card → the card's new full text. */
+/**
+ * Card text from speech, with Gemini:
+ * - `{ card, change }`: apply a spoken change ("posuň to na sobotu") to the shown card;
+ * - `{ utterance }`: tidy a long, messy dictation into card text.
+ */
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as { card?: unknown; change?: unknown } | null;
-  const card = typeof body?.card === "string" ? body.card.slice(0, 500) : "";
-  const change = typeof body?.change === "string" ? body.change.slice(0, 500) : "";
-  if (!card || !change) return Response.json({ error: "Chybí karta nebo změna." }, { status: 400 });
+  const body = (await request.json().catch(() => null)) as { card?: unknown; change?: unknown; utterance?: unknown } | null;
+  const str = (v: unknown) => (typeof v === "string" ? v.slice(0, 1000) : "");
+  const [card, change, utterance] = [str(body?.card), str(body?.change), str(body?.utterance)];
+  if (!(card && change) && !utterance) return Response.json({ error: "Chybí text." }, { status: 400 });
   try {
-    const text = await reviseCard(card, change, request.signal);
-    return text ? Response.json({ text }) : Response.json({ error: "Změnu se nepodařilo použít." }, { status: 502 });
+    const text = utterance ? await cleanCard(utterance, request.signal) : await reviseCard(card, change, request.signal);
+    return text ? Response.json({ text }) : Response.json({ error: "Text se nepodařilo upravit." }, { status: 502 });
   } catch (err) {
-    console.warn(`[card] revise failed: ${err instanceof Error ? err.message : String(err)}`);
-    return Response.json({ error: "Změnu se nepodařilo použít." }, { status: 502 });
+    console.warn(`[card] failed: ${err instanceof Error ? err.message : String(err)}`);
+    return Response.json({ error: "Text se nepodařilo upravit." }, { status: 502 });
   }
 }

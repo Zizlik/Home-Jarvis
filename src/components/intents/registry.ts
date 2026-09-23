@@ -105,7 +105,7 @@ export const registry: Registry = {
     headerIcon: (s) => (s.isShoppingList ? ShoppingCart : ListChecks),
     headerLabel: (s) => (s.isShoppingList ? "Nákup" : "Seznam"),
     badges: urgent,
-    summary: (d) => `${count(d.items.length, "položka", "položky", "položek")} · ${d.items.slice(0, 3).join(", ")}`,
+    summary: (d) => `${d.title ? `${d.title} · ` : ""}${count(d.items.length, "položka", "položky", "položek")} · ${d.items.slice(0, 3).join(", ")}`,
     Component: TodoList,
   },
   timer: {

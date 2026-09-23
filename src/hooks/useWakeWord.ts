@@ -113,12 +113,15 @@ export function useWakeWord(enabled: boolean, paused: boolean, onWake: (mic: Med
   return { status, stream };
 }
 
-/** A short rising two-tone: "I'm listening". */
-export function chime() {
+/**
+ * "heard": one soft blip the moment the wake word fires ("I heard you, connecting").
+ * "ready": a rising two-tone when Jarvis is actually listening ("speak now").
+ */
+export function chime(kind: "heard" | "ready" = "ready") {
   try {
     const ctx = new AudioContext();
     const t = ctx.currentTime;
-    [660, 990].forEach((f, i) => {
+    (kind === "heard" ? [520] : [660, 990]).forEach((f, i) => {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.frequency.value = f;

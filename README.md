@@ -4,7 +4,7 @@ Hlasový asistent: mluvíš s ním česky (OpenAI `gpt-live-1`) a on ti živě u
 
 ## Stav
 
-Krok 1, prototyp: hlas, nástroje `create_card` / `update_card` / `save_card` / `discard_card`, jednoduchý výpis. Plné karty a MCP (kalendář…) přijdou v dalších krocích. Původní textové pole běží na `/shapeshift`.
+Hlas (`gpt-live-1`, oslovení „Hey Jarvis“ přímo v prohlížeči), karty a psaní ze Shapeshiftu, nastavení s MCP servery na `/nastaveni`. Nápady do budoucna jsou v [docs/NAPADY.md](docs/NAPADY.md).
 
 ## Spuštění
 

@@ -84,3 +84,34 @@ export async function reviseCard(card: string, change: string, signal?: AbortSig
   const out = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
   return out ? out.replace(/^["'„“]+|["'“”]+$/g, "").split("\n")[0].trim() : null;
 }
+
+const CLEAN = `Dostaneš přepis mluvené řeči, ze kterého má aplikace udělat kartu (seznam, událost, připomínku, poznámku…). Přepiš ho na krátký, úhledný text karty česky.
+- Zachovej všechna data, časy, částky, čísla, jména a položky. Nic nepřidávej.
+- Vyhoď zakoktání, výplňová slova a úvody („potřebuju“, „tak“, „jako“, „O…“).
+- Seznam piš jako „Nadpis: položka, položka a položka“, když je z řeči jasné, k čemu seznam je; jinak jen položky oddělené čárkami.
+- Čísla piš číslicemi. Vrať jen text karty, bez uvozovek a vysvětlení.
+Příklady:
+potřebuji se připravit na meeting a potřebuju tam tedy k tyhle body. O… dvanáct. O… padesát čtyři. O ... čtyřicet osm → Příprava na meeting: bod 12, bod 54 a bod 48
+no tak mi zapiš že zítra jako musím v deset zavolat do banky kvůli tý hypotéce → zítra v 10 zavolat do banky kvůli hypotéce
+nakoupit teda chleba, eee, mléko a pak ještě asi dvoje vejce → koupit chleba, mléko a 2 vejce`;
+
+/** Tidy a dictated utterance into card text ("…body. O… dvanáct." → "Příprava na meeting: bod 12, …"). */
+export async function cleanCard(utterance: string, signal?: AbortSignal): Promise<string | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return null;
+  const timeout = AbortSignal.timeout(4000);
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: CLEAN }] },
+      contents: [{ role: "user", parts: [{ text: utterance }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: 256, thinkingConfig: { thinkingBudget: 0 } },
+    }),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+  const out = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
+  return out ? out.replace(/^["'„“]+|["'“”]+$/g, "").split("\n")[0].trim() : null;
+}
