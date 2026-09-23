@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, LogOut, NotebookPen, Plug } from "lucide-react";
+import { Loader2, LogOut, Plug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { GoogleSyncPrefs } from "@/lib/google/cards";
 import { notify } from "@/lib/notify";
 
-type Status = { configured: boolean; connected: boolean; email: string | null; keep: boolean };
+type Status = { configured: boolean; connected: boolean; email: string | null; keep: boolean; keepError?: string | null; keepClientId?: string | null };
 
 const REASONS: Record<string, string> = {
   access_denied: "přístup nebyl povolen",
@@ -80,13 +80,6 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
               </a>
             </Button>
           )}
-          {status.connected && !status.keep && (
-            <Button asChild variant="outline" size="sm">
-              <a href="/api/google/login?keep=1">
-                <NotebookPen /> Povolit Keep
-              </a>
-            </Button>
-          )}
           {status.connected && (
             <Button variant="outline" size="sm" onClick={disconnect} disabled={busy}>
               <LogOut /> Odpojit
@@ -95,12 +88,7 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
         </div>
       </div>
 
-      {status.connected && !status.keep && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Keep povolíš takto: v Admin konzoli Google Workspace otevři Zabezpečení → Ovládací prvky API → Delegování v rámci celé domény, přidej Client ID této aplikace se
-          scope <code className="font-mono">https://www.googleapis.com/auth/keep</code>, v Google Cloud zapni Google Keep API a pak klikni na „Povolit Keep“.
-        </p>
-      )}
+      {status.connected && !status.keep && <KeepSetup status={status} />}
 
       <fieldset className="flex flex-col gap-3" disabled={!status.connected}>
         <legend className="mb-1 text-sm font-medium">Při uložení karty zapsat také do Googlu</legend>
@@ -141,6 +129,34 @@ export function GoogleSettings({ value, onChange }: { value: GoogleSyncPrefs; on
           <p className="text-xs text-amber-700">Keep ještě není povolený, poznámky a seznamy do Keep se zatím nezapíšou.</p>
         )}
       </fieldset>
+    </div>
+  );
+}
+
+/** Keep only works through a Workspace service account with domain-wide delegation. */
+function KeepSetup({ status }: { status: Status }) {
+  const code = (t: string) => <code className="rounded bg-muted px-1 font-mono text-[11px] break-all">{t}</code>;
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-dashed px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+      <p className="font-medium text-foreground">Google Keep zatím není povolený</p>
+      {status.keepError === "no-key" ? (
+        <ol className="list-decimal space-y-1 ps-4">
+          <li>V Google Cloud Console (stejný projekt) zapni Google Keep API.</li>
+          <li>IAM a správa → Servisní účty → Vytvořit servisní účet (např. „jarvis-keep“), role nejsou potřeba.</li>
+          <li>U účtu Klíče → Přidat klíč → JSON. Stažený soubor nahraj na server jako {code("~/projects/home-jarvis/data/google-service-account.json")}.</li>
+          <li>Obnov tuhle stránku: objeví se číslo, které zadáš v Admin konzoli.</li>
+        </ol>
+      ) : (
+        <>
+          <p>
+            V Admin konzoli Google Workspace otevři Zabezpečení → Ovládací prvky API → Delegování v rámci celé domény → Přidat nový a zadej:
+          </p>
+          <p>ID klienta: {code(status.keepClientId ?? "")}</p>
+          <p>Rozsahy OAuth: {code("https://www.googleapis.com/auth/keep")}</p>
+          {status.keepError && <p className="text-amber-700">Teď Google hlásí: {status.keepError}</p>}
+          <p>Změna se může projevit až za pár minut, pak obnov stránku.</p>
+        </>
+      )}
     </div>
   );
 }

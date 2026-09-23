@@ -1,6 +1,7 @@
 import "server-only";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { keepStatus } from "./keep";
 
 /**
  * Google sign-in for Jarvis: one OAuth consent, then a refresh token kept
@@ -15,9 +16,7 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
 ];
-/** Keep is Workspace only: the admin must first allow this client id for this scope
- * (Admin console → Security → API controls → Domain-wide delegation), so it is asked for separately. */
-export const KEEP_SCOPE = "https://www.googleapis.com/auth/keep";
+
 
 type Stored = { refreshToken: string; accessToken?: string; expiresAt?: number; email?: string; scopes: string[] };
 
@@ -46,12 +45,12 @@ async function save(s: Stored) {
   await rename(`${FILE}.tmp`, FILE);
 }
 
-export function consentUrl(request: Request, state: string, withKeep = false) {
+export function consentUrl(request: Request, state: string) {
   const p = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     redirect_uri: redirectUri(request),
     response_type: "code",
-    scope: [...SCOPES, ...(withKeep ? [KEEP_SCOPE] : [])].join(" "),
+    scope: SCOPES.join(" "),
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "true",
@@ -96,9 +95,15 @@ export async function accessToken(): Promise<string | null> {
   return t.access_token!;
 }
 
+/** The signed-in Google account, or null. */
+export async function account() {
+  return (await load())?.email ?? null;
+}
+
 export async function status() {
   const s = await load();
-  return { configured: configured(), connected: !!s, email: s?.email ?? null, keep: !!s?.scopes.includes(KEEP_SCOPE) };
+  const keep = await keepStatus(s?.email ?? null);
+  return { configured: configured(), connected: !!s, email: s?.email ?? null, keep: keep.ready, keepError: keep.error, keepClientId: keep.clientId };
 }
 
 export async function disconnect() {
@@ -107,9 +112,9 @@ export async function disconnect() {
   await rm(FILE, { force: true });
 }
 
-/** Authorized call to a Google REST API; throws with Google's message on failure. */
-export async function google<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const token = await accessToken();
+/** Authorized call to a Google REST API; throws with Google's message on failure. `token` overrides the user's (Keep). */
+export async function google<T>(url: string, init: RequestInit = {}, token?: string): Promise<T> {
+  token ??= (await accessToken()) ?? undefined;
   if (!token) throw new Error("Google není připojený.");
   const res = await fetch(url, {
     ...init,

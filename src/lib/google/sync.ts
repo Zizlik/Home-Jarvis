@@ -1,5 +1,13 @@
 import "server-only";
-import { google } from "./auth";
+import { account, google } from "./auth";
+import { keepToken } from "./keep";
+
+/** Keep calls act as the signed-in user through the service account. */
+async function asKeep() {
+  const user = await account();
+  if (!user) throw new Error("Google není připojený.");
+  return keepToken(user);
+}
 
 /**
  * Saved cards → Google. The browser parses the card (its time zone, its parsers)
@@ -64,7 +72,7 @@ export async function create(card: SyncCard): Promise<SyncRef> {
         card.kind === "keep-note"
           ? { text: { text: card.text } }
           : { list: { listItems: card.items.map((t) => ({ text: { text: t }, checked: false })) } };
-      const n = await google<{ name: string }>(KEEP, { method: "POST", body: JSON.stringify({ title: card.title, body }) });
+      const n = await google<{ name: string }>(KEEP, { method: "POST", body: JSON.stringify({ title: card.title, body }) }, await asKeep());
       return { target: "keep", id: n.name };
     }
   }
@@ -83,6 +91,6 @@ export async function remove(ref: SyncRef): Promise<void> {
       for (const id of [...(ref.parentIds ?? []), ref.id]) await google<void>(`${TASKS}/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(gone);
       return;
     case "keep":
-      return google<void>(`https://keep.googleapis.com/v1/${ref.id}`, { method: "DELETE" }).catch(gone);
+      return google<void>(`https://keep.googleapis.com/v1/${ref.id}`, { method: "DELETE" }, await asKeep()).catch(gone);
   }
 }
