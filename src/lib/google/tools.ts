@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import type OpenAI from "openai";
 import { account, google } from "./auth";
 import { keepToken } from "./keep";
+import { minutesText } from "@/lib/meeting/minutes";
+import { listMeetings } from "@/lib/meeting/store";
 
 /**
  * Google as function tools for the question agent (/api/agent): read the calendar,
@@ -11,6 +13,17 @@ import { keepToken } from "./keep";
 
 const TZ = "Europe/Prague";
 const str = (description: string) => ({ type: "string", description });
+
+/** Meeting archive (data/meetings): works without Google. */
+export const MEETING_TOOLS: OpenAI.Responses.FunctionTool[] = [
+  {
+    type: "function",
+    name: "meeting_notes",
+    description: "Zápisy z minulých meetingů nahraných v Jarvisovi (nejnovější první), případně jen ty, které obsahují hledaný text.",
+    strict: true,
+    parameters: { type: "object", properties: { query: { type: ["string", "null"], description: "Hledaný text, nebo null" } }, required: ["query"], additionalProperties: false },
+  },
+];
 
 export const GOOGLE_TOOLS: OpenAI.Responses.FunctionTool[] = [
   {
@@ -181,6 +194,12 @@ export async function runGoogleTool(name: string, args: Record<string, unknown>,
       await google("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { method: "POST", body: JSON.stringify({ raw: mime(d) }) });
       drafts.delete(String(args.draft_id));
       return { stav: "odesláno", komu: d.to, předmět: d.subject };
+    }
+    case "meeting_notes": {
+      const q = typeof args.query === "string" ? args.query.toLowerCase() : "";
+      const all = await listMeetings();
+      const hits = all.filter((m) => !q || `${minutesText(m.minutes, "")} ${m.transcript}`.toLowerCase().includes(q)).slice(0, 5);
+      return hits.map((m) => ({ začátek: m.startedAt, zápis: minutesText(m.minutes, new Date(m.startedAt).toLocaleString("cs-CZ", { timeZone: "Europe/Prague" })).slice(0, 3000) }));
     }
     default:
       return { chyba: `Neznámý nástroj ${name}` };

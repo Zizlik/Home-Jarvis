@@ -1,6 +1,6 @@
 "use client";
 
-import { Captions, CaptionsOff, Ear, EarOff, Loader2, Settings, Sparkles, Square } from "lucide-react";
+import { Captions, CaptionsOff, Ear, EarOff, Loader2, NotebookPen, Settings, Sparkles, Square } from "lucide-react";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { Shapeshift, type ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { type LogLine, useJarvis } from "@/hooks/useJarvis";
@@ -136,6 +136,14 @@ export function Jarvis() {
           >
             {transcript ? <Captions className="size-[18px]" /> : <CaptionsOff className="size-[18px]" />}
           </button>
+          <a
+            href="/meeting"
+            aria-label="Meeting"
+            title="Meeting: poslouchá a píše zápis"
+            className="grid size-9 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <NotebookPen className="size-[18px]" />
+          </a>
           <a
             href="/nastaveni"
             aria-label="Nastavení"

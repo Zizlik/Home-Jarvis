@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { AGENT_INSTRUCTIONS } from "@/lib/jarvis/config";
 import { status as googleStatus } from "@/lib/google/auth";
-import { GOOGLE_TOOLS, runGoogleTool } from "@/lib/google/tools";
+import { GOOGLE_TOOLS, MEETING_TOOLS, runGoogleTool } from "@/lib/google/tools";
 import { mcpTools, readSettings } from "@/lib/settings";
 
 export const runtime = "nodejs";
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
     return res;
   };
   const used: string[] = [];
-  const web: OpenAI.Responses.Tool[] = [{ type: "web_search" }, ...(withGoogle ? GOOGLE_TOOLS : [])];
+  const web: OpenAI.Responses.Tool[] = [{ type: "web_search" }, ...MEETING_TOOLS, ...(withGoogle ? GOOGLE_TOOLS : [])];
   const mcp = mcpTools(settings) as OpenAI.Responses.Tool[];
   try {
     let res: OpenAI.Responses.Response;

@@ -23,7 +23,7 @@ let cached: { user: string; token: string; expiresAt: number } | null = null;
 
 async function key(): Promise<Key | null> {
   try {
-    return JSON.parse(await readFile(FILE(), "utf8")) as Key;
+    return JSON.parse(await readFile(/*turbopackIgnore: true*/ FILE(), "utf8")) as Key;
   } catch {
     return null;
   }
