@@ -2,7 +2,7 @@
 
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { ShapeshiftController } from "@/components/shapeshift/Shapeshift";
-import { buildCard, type Card, cardText, classify, decide } from "@/lib/jarvis/cards";
+import { buildCard, type Card, cardText, classify, decide, DESTINATION, targetIntent } from "@/lib/jarvis/cards";
 import type { IntentResult } from "@/lib/jev/types";
 import { registry } from "@/components/intents/registry";
 import { chime } from "@/hooks/useWakeWord";
@@ -312,7 +312,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         if (!r || turn.current.text !== utterance) return; // stale
         const d = decide(r);
         if (d.action === "create" && r.intent.value !== "none" && text.length >= 3) {
-          show(buildCard(text, r));
+          show(buildCard(text, r, targetIntent(utterance) ?? undefined));
           if (needsCleanup(text)) void once("clean", utterance, () => postCard({ utterance: text }));
         }
         // Get the slow parts going now; the delegation picks them up when it arrives.
@@ -387,8 +387,13 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         lastCommand.current = { action: save ? "save" : "discard", at: Date.now(), result };
         return result;
       }
-      const r = await classifyOnce(utterance);
-      if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
+      const jev = await classifyOnce(utterance);
+      if (!jev) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
+      // "…do kalendáře" makes it an event whatever Jev guessed (card and Google destination must match).
+      const target = targetIntent(utterance);
+      const r = target && jev.intent.value !== target && (jev.action?.value === "create" || jev.action?.value === "update" || !jev.action)
+        ? { ...jev, intent: { ...jev.intent, value: target }, action: jev.action && { ...jev.action, value: "create" as const } }
+        : jev;
       // "zavolat mámě je hotové", "odškrtni mléko": checking off a task in Google, not a card edit.
       // A question about it ("jaké mám splněné úkoly?") is not that: it goes the quick way below.
       const asking = /\?\s*$|^(a\s+)?(jak\p{L}*|co|kter\p{L}*|kolik|kdy|mám|mam|máme|mame|jsou|je)(?![\p{L}])/iu.test(utterance.trim());
@@ -408,7 +413,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
       const shown = shapeshift.current?.current();
       const current = shown?.text.trim() && shown.intent ? buildCard(shown.text, r, shown.intent) : null;
       // The card's summary plus the words it was made from, so Jarvis can mention people, place, etc.
-      const describe = (c: Card) => `${c.label}: ${c.summary} (z textu „${c.text}“)`;
+      const describe = (c: Card) => `${c.label}: ${c.summary} (z textu „${c.text}“)${DESTINATION[c.intent] ? `, po uložení půjde do ${DESTINATION[c.intent]}` : ""}`;
       // "smaž tu večeři" may mean a saved card rather than the one in the input.
       const saved = action === "update" || action === "discard" ? findSaved(utterance, savedItems.getSnapshot()) : null;
       const aimsAtSaved = !!saved && (!current || (hasContent(utterance) && saved.score > overlap(utterance, current.text)));

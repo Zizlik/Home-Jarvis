@@ -38,10 +38,35 @@ function nominativeHead(text: string) {
   });
 }
 
+/**
+ * Where the user said it belongs wins over Jev: "do kalendáře" is an event (Google Calendar),
+ * "do úkolů" a reminder (Tasks), "do poznámek / do Keepu" a note (Keep).
+ */
+const TARGETS: [RegExp, CardIntent][] = [
+  [/(?<![\p{L}])(do|v|ve|na)\s+(kalendář\p{L}*|kalendar\p{L}*)|(?<![\p{L}])kalendář(?![\p{L}])/iu, "event"],
+  [/(?<![\p{L}])(do|v|ve|mezi)\s+(úkol\p{L}*|ukol\p{L}*|tasks?|to-?do)(?![\p{L}])/iu, "reminder"],
+  [/(?<![\p{L}])(do|v|ve|mezi)\s+(poznám\p{L}*|poznam\p{L}*|keep\p{L}*)(?![\p{L}])/iu, "note"],
+];
+export function targetIntent(utterance: string): CardIntent | null {
+  return TARGETS.find(([re]) => re.test(utterance))?.[1] ?? null;
+}
+const TARGET_WORDS = /\s*(?<![\p{L}])(?:do|v|ve|na|mezi)\s+(?:kalendář\p{L}*|kalendar\p{L}*|úkol\p{L}*|ukol\p{L}*|tasks?|poznám\p{L}*|poznam\p{L}*|keep\p{L}*)(?![\p{L}])/giu;
+
+/** Where a saved card of this kind goes in Google (for Jarvis to say). */
+export const DESTINATION: Partial<Record<CardIntent, string>> = { event: "Google Kalendáře", reminder: "Google Tasks", todo: "Google Tasks", note: "Google Keep" };
+
 /** What goes on the card: the utterance without the address and command. */
 export function cardText(utterance: string) {
   const m = utterance.match(LEAD);
-  const rest = utterance.slice(m?.[0].length ?? 0).trim().replace(/[.!…]+$/u, "");
+  const rest = utterance
+    .slice(m?.[0].length ?? 0)
+    .replace(TARGET_WORDS, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[,:]\s*/, "")
+    // "…, že si mám zítra vyzvednout balík" → "zítra vyzvednout balík"
+    .replace(/^že\s+(?:si\s+|se\s+)?(?:mám|musím|budu|máme|musíme)?\s*/iu, "")
+    .replace(/[.!…]+$/u, "");
   return m?.[1] ? nominativeHead(rest) : rest;
 }
 
