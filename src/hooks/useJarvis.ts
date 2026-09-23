@@ -129,7 +129,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
       }
       const r = await classifyOnce(utterance);
       if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
-      const replyToAgent = agentAsked.current && /^(\S+\s+){0,5}\S*$/.test(utterance.trim());
+      const replyToAgent =
+        (agentAsked.current && /^(\S+\s+){0,5}\S*$/.test(utterance.trim())) ||
+        // "zavolat mámě je hotové", "odškrtni mléko": a task in Google, not a card edit.
+        /(?<![\p{L}])(hotov[éáýo]?|splněn[éáýo]?|splnen[eayo]?|odškrtni|odskrtni|zaškrtni|zaskrtni|vyřízen[éáýo]?|vyrizen[eayo]?|udělal jsem|udelal jsem|mám hotovo|mam hotovo)(?![\p{L}])/iu.test(utterance);
       const { action } = replyToAgent ? { action: "ask" as const } : decide(r);
       push("tool", `Jev: ${action} · ${r.intent.value} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
       const last = lastCommand.current;

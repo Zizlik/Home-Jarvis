@@ -101,7 +101,7 @@ export const questions = {
     update: "Change the item that is already shown, e.g. move it to another day or time, add or remove something",
     save: "Confirm or save the item that is shown",
     discard: "Cancel, delete or throw away the item that is shown",
-    ask: "Ask a question, look something up (weather, calendar, email, tasks, news) or send an email or message to someone",
+    ask: "Ask a question, look something up (weather, calendar, email, tasks, notes, news), check off a task as done, or send an email or message to someone",
     chat: "Greeting, thanks or small talk with no task",
   }),
   hasExplicitOptions: noul("The text names two or more explicit options to pick between"),

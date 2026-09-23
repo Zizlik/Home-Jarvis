@@ -1,7 +1,8 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import type OpenAI from "openai";
-import { google } from "./auth";
+import { account, google } from "./auth";
+import { keepToken } from "./keep";
 
 /**
  * Google as function tools for the question agent (/api/agent): read the calendar,
@@ -34,9 +35,33 @@ export const GOOGLE_TOOLS: OpenAI.Responses.FunctionTool[] = [
   {
     type: "function",
     name: "tasks_list",
-    description: "Nesplněné úkoly uživatele v Google Tasks.",
+    description: "Úkoly uživatele v Google Tasks: nesplněné, nebo i splněné (s datem splnění). Podúkoly patří k nadřazenému úkolu (seznamy z Jarvise).",
     strict: true,
-    parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+    parameters: {
+      type: "object",
+      properties: { include_completed: { type: "boolean", description: "true = i splněné úkoly" } },
+      required: ["include_completed"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "tasks_complete",
+    description: "Označí úkol v Google Tasks jako splněný (nebo vrátí jako nesplněný). Hledá podle názvu.",
+    strict: true,
+    parameters: {
+      type: "object",
+      properties: { title: str("Název nebo část názvu úkolu"), done: { type: "boolean", description: "true = splněno, false = vrátit jako nesplněné" } },
+      required: ["title", "done"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "keep_notes",
+    description: "Poznámky a seznamy uživatele v Google Keep, u seznamů i které položky jsou zaškrtnuté.",
+    strict: true,
+    parameters: { type: "object", properties: { query: { type: ["string", "null"], description: "Hledaný text v názvu nebo obsahu, nebo null" } }, required: ["query"], additionalProperties: false },
   },
   {
     type: "function",
@@ -58,6 +83,10 @@ export const GOOGLE_TOOLS: OpenAI.Responses.FunctionTool[] = [
     parameters: { type: "object", properties: { draft_id: str("Id z gmail_prepare") }, required: ["draft_id"], additionalProperties: false },
   },
 ];
+
+type Task = { id: string; title?: string; status?: string; completed?: string; due?: string; parent?: string };
+type KeepNote = { trashed?: boolean; title?: string; updateTime?: string; body?: { text?: { text?: string }; list?: { listItems?: { text?: { text?: string }; checked?: boolean }[] } } };
+const TASKS = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks";
 
 type Draft = { to: string; subject: string; body: string; at: number };
 const drafts = new Map<string, Draft>();
@@ -98,10 +127,46 @@ export async function runGoogleTool(name: string, args: Record<string, unknown>,
       );
     }
     case "tasks_list": {
-      const r = await google<{ items?: { title?: string; due?: string; notes?: string; parent?: string }[] }>(
-        "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&maxResults=50",
-      );
-      return (r.items ?? []).map((t) => ({ úkol: t.title, termín: t.due?.slice(0, 10), podúkol: !!t.parent }));
+      const all = args.include_completed === true;
+      const q = new URLSearchParams({ showCompleted: String(all), showHidden: String(all), maxResults: "100" });
+      const r = await google<{ items?: Task[] }>(`${TASKS}?${q}`);
+      const items = r.items ?? [];
+      const title = new Map(items.map((t) => [t.id, t.title]));
+      return items.map((t) => ({
+        úkol: t.title,
+        stav: t.status === "completed" ? "splněno" : "nesplněno",
+        splněno: t.completed?.slice(0, 10),
+        termín: t.due?.slice(0, 10),
+        v_seznamu: t.parent ? title.get(t.parent) : undefined,
+      }));
+    }
+    case "tasks_complete": {
+      const want = String(args.title).toLowerCase();
+      const done = args.done !== false;
+      const r = await google<{ items?: Task[] }>(`${TASKS}?showCompleted=true&showHidden=true&maxResults=100`);
+      const candidates = (r.items ?? []).filter((t) => t.title?.toLowerCase().includes(want) && (t.status === "completed") !== done);
+      if (!candidates.length) return { chyba: `Úkol „${args.title}“ ${done ? "mezi nesplněnými" : "mezi splněnými"} není.` };
+      if (candidates.length > 1) return { chyba: "Víc úkolů odpovídá, upřesni který.", možnosti: candidates.map((t) => t.title) };
+      const t = candidates[0];
+      await google(`${TASKS}/${encodeURIComponent(t.id)}`, { method: "PATCH", body: JSON.stringify(done ? { status: "completed" } : { status: "needsAction", completed: null }) });
+      return { úkol: t.title, stav: done ? "splněno" : "nesplněno" };
+    }
+    case "keep_notes": {
+      const user = await account();
+      if (!user) return { chyba: "Google není připojený." };
+      const r = await google<{ notes?: KeepNote[] }>("https://keep.googleapis.com/v1/notes?pageSize=50", {}, await keepToken(user));
+      const q = typeof args.query === "string" ? args.query.toLowerCase() : "";
+      // The API rejects a trashed filter here, so the bin is dropped in code.
+      return (r.notes ?? [])
+        .filter((n) => !n.trashed)
+        .map((n) => ({
+          název: n.title || undefined,
+          text: n.body?.text?.text?.slice(0, 500),
+          položky: n.body?.list?.listItems?.map((i) => `${i.checked ? "[x]" : "[ ]"} ${i.text?.text ?? ""}`),
+          upraveno: n.updateTime?.slice(0, 10),
+        }))
+        .filter((n) => !q || JSON.stringify(n).toLowerCase().includes(q))
+        .slice(0, 20);
     }
     case "gmail_prepare": {
       const id = randomUUID().slice(0, 8);
