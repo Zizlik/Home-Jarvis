@@ -8,6 +8,20 @@ import { EMPTY_MINUTES, type MeetingRecord, type Minutes, type Segment } from "@
 export type MeetingStatus = "idle" | "connecting" | "live" | "stopping" | "processing" | "done";
 export type { Segment };
 
+/** Any "Mluvčí A" left in the minutes gets the name the user gave A. */
+function withNames(m: Minutes, speakers: Record<string, string>): Minutes {
+  const fix = (t: string) => t.replace(/[Mm]luvčí(?:ho|mu|m)?\s+([A-Z]{1,2})(?![\p{L}])/gu, (x, l: string) => speakers[l] ?? x);
+  const owner = (o: string | null) => (o && /^[A-Z]{1,2}$/.test(o) ? (speakers[o] ?? o) : o && fix(o));
+  return {
+    ...m,
+    overview: fix(m.overview),
+    summary: m.summary.map(fix),
+    decisions: m.decisions.map(fix),
+    questions: m.questions.map(fix),
+    actions: m.actions.map((a) => ({ ...a, task: fix(a.task), owner: owner(a.owner) })),
+  };
+}
+
 /** Content words in a task (for "is this the same task"). */
 const words = (t: string) => t.split(/[^\p{L}\d]+/u).filter((w) => w.length >= 3).length;
 
@@ -15,8 +29,12 @@ const words = (t: string) => t.split(/[^\p{L}\d]+/u).filter((w) => w.length >= 3
 const PAUSE_MS = 2000;
 /** Nonstop talk is still cut into segments this long. */
 const MAX_SEGMENT_MS = 30_000;
+/** The audio buffer is committed at least this often, words or not: without it some sentences never come back. */
+const COMMIT_EVERY_MS = 25_000;
 /** How often the minutes are rewritten while the meeting runs. */
 const MINUTES_EVERY_MS = 60_000;
+/** Nobody has spoken for this long: the meeting ends by itself (a warning shows a minute before). */
+export const AUTO_END_MS = 5 * 60_000;
 
 type Conn = { pc: RTCPeerConnection; dc: RTCDataChannel };
 
@@ -37,7 +55,16 @@ export function useMeeting() {
   /** The meeting's mic, shared with Jarvis when it joins. */
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
-  const [title, setTitle] = useState("");
+  const [title, setTitleState] = useState("");
+  // The title follows the minutes' topic until the user types one.
+  const titleAuto = useRef(true);
+  const setTitle = useCallback((t: string) => {
+    titleAuto.current = !t.trim();
+    setTitleState(t);
+  }, []);
+  /** Seconds since anyone last spoke, while live (for the auto-end warning). */
+  const [quiet, setQuiet] = useState(0);
+  const lastSpeech = useRef(0);
   const [participants, setParticipants] = useState<string[]>([]);
   /** Diarization label → name, guessed at the end and editable. */
   const [speakers, setSpeakers] = useState<Record<string, string>>({});
@@ -56,6 +83,8 @@ export function useMeeting() {
   const summarized = useRef(0);
   const minutesRef = useRef<Minutes>(EMPTY_MINUTES);
   const minutesBusy = useRef<Promise<void> | null>(null);
+  // What Jarvis said on the meeting (absolute ms → text), merged into the transcript as "Jarvis".
+  const jarvisLines = useRef<{ ts: number; text: string }[]>([]);
   // Action items added by hand or by Jarvis: kept when the model rewrites the minutes.
   const manual = useRef<Minutes["actions"]>([]);
   const keepManual = (m: Minutes): Minutes => {
@@ -72,19 +101,25 @@ export function useMeeting() {
   // The recording for "who spoke" (webm/opus at 32 kbps ≈ 0.24 MB a minute; 25 MB ≈ 100 min).
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
-  // stop() reads the latest title and participants.
+  // stop() and refinalize() read the latest title, participants and names.
   const titleRef = useRef(title);
   const participantsRef = useRef(participants);
+  const speakersRef = useRef(speakers);
   useEffect(() => {
     titleRef.current = title;
     participantsRef.current = participants;
-  }, [title, participants]);
+    speakersRef.current = speakers;
+  }, [title, participants, speakers]);
   // connect() reconnects itself when a session drops.
   const reconnect = useRef<() => Promise<void>>(async () => undefined);
 
-  const commit = useCallback(() => {
+  const lastCommit = useRef(0);
+  const commit = useCallback((force = false) => {
     const c = conn.current;
-    if (c?.dc.readyState === "open" && partialRef.current.trim()) c.dc.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    if (c?.dc.readyState !== "open" || (!force && !partialRef.current.trim())) return;
+    if (force && performance.now() - lastSpeech.current > COMMIT_EVERY_MS) return; // nothing new to commit (avoids "buffer too small")
+    c.dc.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    lastCommit.current = performance.now();
   }, []);
 
   /** Fold the segments since the last update into the minutes. */
@@ -107,6 +142,7 @@ export function useMeeting() {
           minutesRef.current = merged;
           setMinutes(merged);
           summarized.current = upto;
+          if (titleAuto.current && merged.title) setTitleState(merged.title);
         } else setError(body.error ?? "Zápis se nepodařilo aktualizovat.");
       } finally {
         setUpdating(false);
@@ -132,6 +168,7 @@ export function useMeeting() {
     dc.onmessage = (e) => {
       const ev = JSON.parse(e.data as string) as { type: string; delta?: string; transcript?: string; error?: { message?: string } };
       if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
+        lastSpeech.current = performance.now();
         if (!partialRef.current) segmentStart.current = performance.now();
         partialRef.current += ev.delta;
         setPartial(partialRef.current);
@@ -140,6 +177,8 @@ export function useMeeting() {
         if (performance.now() - segmentStart.current > MAX_SEGMENT_MS) commit();
       } else if (ev.type === "conversation.item.input_audio_transcription.completed") {
         const text = (ev.transcript ?? partialRef.current).trim();
+        if (!partialRef.current) segmentStart.current = performance.now() - 3000;
+        if (text) lastSpeech.current = performance.now();
         partialRef.current = "";
         setPartial("");
         if (text) {
@@ -150,6 +189,10 @@ export function useMeeting() {
       } else if (ev.type === "error") {
         console.warn("[meeting]", ev.error?.message);
       }
+    };
+    // A session can also die without closing the channel: watch the connection itself.
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") dc.onclose?.(new Event("close"));
     };
     dc.onclose = () => {
       if (conn.current?.dc !== dc) return;
@@ -191,6 +234,10 @@ export function useMeeting() {
     setSpeakers({});
     setEndedAt(null);
     manual.current = [];
+    jarvisLines.current = [];
+    titleAuto.current = !titleRef.current.trim();
+    lastSpeech.current = performance.now();
+    setQuiet(0);
     try {
       mic.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       setStream(mic.current);
@@ -221,8 +268,11 @@ export function useMeeting() {
   }, [connect]);
 
   /** Finish: last words, last minutes update, then the review screen. */
+  const stopping = useRef(false);
   const stop = useCallback(async () => {
-    if (!running.current) return;
+    // One stop at a time: "ukonči meeting" can arrive twice (transcript + delegation).
+    if (!running.current || stopping.current) return;
+    stopping.current = true;
     setStatus("stopping");
     commit();
     await new Promise((r) => setTimeout(r, 2500));
@@ -271,7 +321,7 @@ export function useMeeting() {
     const res = await fetch("/api/meeting/finalize", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: titleRef.current, participants: participantsRef.current, segments: all.current }),
+      body: JSON.stringify({ title: titleAuto.current ? "" : titleRef.current, participants: participantsRef.current, segments: all.current }),
     }).catch(() => null);
     const body = (await res?.json().catch(() => null)) as { minutes?: Minutes; speakers?: Record<string, string>; error?: string } | null;
     if (body?.minutes) {
@@ -279,7 +329,7 @@ export function useMeeting() {
       minutesRef.current = merged;
       setMinutes(merged);
       setSpeakers(body.speakers ?? {});
-      if (!titleRef.current.trim()) setTitle(body.minutes.title);
+      if (titleAuto.current || !titleRef.current.trim()) setTitleState(body.minutes.title);
       // Names the model recognized that weren't listed become participants.
       const named = Object.values(body.speakers ?? {});
       setParticipants((p) => [...p, ...named.filter((n) => !p.includes(n))]);
@@ -289,6 +339,7 @@ export function useMeeting() {
     }
     setStep(null);
     setStatus("done");
+    stopping.current = false;
   }, [commit, updateMinutes]);
 
   /** Add an action item that survives the minutes being rewritten (Jarvis: "zapiš úkol…"). */
@@ -299,10 +350,15 @@ export function useMeeting() {
     setMinutes(minutesRef.current);
   }, []);
 
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
+
   const reset = useCallback(() => {
     manual.current = [];
+    titleAuto.current = true;
     setStep(null);
-    setTitle("");
+    setTitleState("");
     setParticipants([]);
     setSpeakers({});
     setEndedAt(null);
@@ -314,6 +370,63 @@ export function useMeeting() {
     setMinutes(EMPTY_MINUTES);
     setStartedAt(null);
     setStatus("idle");
+  }, []);
+
+  // The meeting model commits itself at pauses (server VAD); this is only a safety net for nonstop talk.
+  useEffect(() => {
+    if (status !== "live") return;
+    const id = setInterval(() => {
+      if (performance.now() - lastCommit.current >= COMMIT_EVERY_MS) commit(true);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [status, commit]);
+
+  // Nobody speaking for AUTO_END_MS ends the meeting (people left, forgot to stop).
+  const stopRef = useRef<() => Promise<void>>(async () => undefined);
+  useEffect(() => {
+    if (status !== "live") return;
+    lastSpeech.current = performance.now();
+    const id = setInterval(() => {
+      const q = performance.now() - lastSpeech.current;
+      setQuiet(Math.round(q / 1000));
+      if (q >= AUTO_END_MS) {
+        setError("Meeting se ukončil sám po 5 minutách ticha.");
+        void stopRef.current();
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [status]);
+
+  /** Jarvis's spoken turns on this meeting (replaces the list; the latest turn may still be growing). */
+  const setJarvisSaid = useCallback((lines: { ts: number; text: string }[]) => {
+    jarvisLines.current = lines;
+  }, []);
+
+  /** "Pokračovat": someone is still here, reset the silence clock. */
+  const keepAlive = useCallback(() => {
+    lastSpeech.current = performance.now();
+    setQuiet(0);
+  }, []);
+
+  /** Rewrite the final minutes with the names the user confirmed ("Mluvčí A" → Petr). */
+  const refinalize = useCallback(async () => {
+    setStep("Přepisuji zápis se jmény…");
+    setStatus("processing");
+    const res = await fetch("/api/meeting/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: titleAuto.current ? "" : titleRef.current, participants: participantsRef.current, segments: all.current, speakers: speakersRef.current }),
+    }).catch(() => null);
+    const body = (await res?.json().catch(() => null)) as { minutes?: Minutes; speakers?: Record<string, string>; error?: string } | null;
+    if (body?.minutes) {
+      const merged = keepManual(body.minutes);
+      minutesRef.current = merged;
+      setMinutes(merged);
+      if (body.speakers) setSpeakers(body.speakers);
+      if (titleAuto.current) setTitleState(merged.title);
+    } else setError(body?.error ?? "Zápis se nepodařilo přepsat.");
+    setStep(null);
+    setStatus("done");
   }, []);
 
   // Minutes every minute while live.
@@ -344,9 +457,15 @@ export function useMeeting() {
             startedAt: new Date(startedAt).toISOString(),
             endedAt: new Date(endedAt ?? Date.now()).toISOString(),
             participants,
-            speakers,
-            segments,
-            minutes,
+            speakers: { ...speakers, JARVIS: "Jarvis" },
+            segments: [
+              ...segments,
+              // If diarization already heard Jarvis through the speakers (a label named "Jarvis"), don't add it twice.
+              ...(Object.values(speakers).includes("Jarvis") ? [] : jarvisLines.current)
+                .filter((l) => l.text.trim() && l.ts >= startedAt)
+                .map((l) => ({ at: Math.max(0, Math.round((l.ts - startedAt) / 1000)), text: l.text.trim(), speaker: "JARVIS" })),
+            ].sort((a, b) => a.at - b.at),
+            minutes: withNames(minutes, speakers),
           }
         : null,
     [startedAt, endedAt, title, minutes, participants, speakers, segments],
@@ -356,6 +475,10 @@ export function useMeeting() {
     status,
     step,
     stream,
+    quiet,
+    keepAlive,
+    setJarvisSaid,
+    refinalize,
     segments,
     partial,
     minutes,

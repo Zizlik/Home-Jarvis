@@ -6,7 +6,7 @@ import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { useMeeting } from "@/hooks/useMeeting";
+import { AUTO_END_MS, useMeeting } from "@/hooks/useMeeting";
 import { MeetingJarvis } from "./MeetingJarvis";
 import { meetingFileName, meetingMarkdown, meetingWhen } from "@/lib/meeting/markdown";
 import { actionText, clock, type MeetingRecord, type Minutes, speakerName } from "@/lib/meeting/minutes";
@@ -199,6 +199,8 @@ export function Meeting() {
   const meeting = useMeeting();
   const { status, segments, partial, minutes, setMinutes, startedAt, title, setTitle, participants, setParticipants, speakers, setSpeakers } = meeting;
   const [now, setNow] = useState(() => Date.now());
+  // The user renamed speakers after the minutes were written: offer to rewrite them.
+  const [namesChanged, setNamesChanged] = useState(false);
   const [keepReady, setKeepReady] = useState(false);
   const [toKeep, setToKeep] = useState(true);
   /** Action index → left out of Tasks. */
@@ -336,6 +338,15 @@ export function Meeting() {
 
       {meeting.error && <p className="rounded-xl bg-amber-50 px-4 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{meeting.error}</p>}
 
+      {live && meeting.quiet >= AUTO_END_MS / 1000 - 60 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+          <span className="flex-1">Už {Math.floor(meeting.quiet / 60)} min nikdo nemluví. Za {Math.max(0, Math.round(AUTO_END_MS / 1000 - meeting.quiet))} s meeting ukončím.</span>
+          <Button size="sm" variant="outline" onClick={meeting.keepAlive}>
+            Pokračovat
+          </Button>
+        </div>
+      )}
+
       {/* Always mounted, so a Jarvis session never outlives the meeting; hidden on the review screen. */}
       <div hidden={status !== "idle" && status !== "connecting" && !live}>
         <MeetingJarvis meeting={meeting} />
@@ -439,17 +450,32 @@ export function Meeting() {
                     label={l}
                     name={speakers[l] ?? ""}
                     participants={participants}
-                    onChange={(name) =>
+                    onChange={(name) => {
+                      setNamesChanged(true);
                       setSpeakers((s) => {
                         const next = { ...s };
                         if (name) next[l] = name;
                         else delete next[l];
                         return next;
-                      })
-                    }
+                      });
+                    }}
                     onCustomDone={addParticipant}
                   />
                 ))}
+                {namesChanged && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                    <span className="flex-1">Jména se změnila. Zápis je zatím napsaný podle původních.</span>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setNamesChanged(false);
+                        void meeting.refinalize();
+                      }}
+                    >
+                      Přepsat zápis se jmény
+                    </Button>
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-sm text-muted-foreground">Rozlišení mluvčích nebylo k dispozici, přepis bude bez jmen.</p>
@@ -499,8 +525,9 @@ export function Meeting() {
             </Button>
           </section>
 
-          <Collapsible label={`Celý přepis (${segments.length})`}>
-            <TranscriptLines r={{ speakers, segments }} />
+          {/* As it will be saved: with Jarvis's own words. */}
+          <Collapsible label={`Celý přepis (${rec.segments.length})`}>
+            <TranscriptLines r={rec} />
           </Collapsible>
 
           <section aria-label="Uložení" className="flex flex-col gap-4 rounded-2xl border bg-card p-5 shadow-sm">

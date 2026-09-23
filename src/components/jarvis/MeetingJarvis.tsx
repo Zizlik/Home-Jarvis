@@ -1,7 +1,7 @@
 "use client";
 
 import { Calculator, CheckSquare, Ear, Loader2, MessageSquare, Sparkles, Timer, UserRound, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { type Activity, type MeetingHooks, useJarvis } from "@/hooks/useJarvis";
 import type { useMeeting } from "@/hooks/useMeeting";
@@ -29,6 +29,8 @@ type Item = Activity & { id: number; at: number };
 
 const ICON = { task: CheckSquare, result: Calculator, timer: Timer, answer: MessageSquare } as const;
 
+const subscribeNoop = () => () => {};
+
 function readMode(): Mode {
   try {
     const v = localStorage.getItem(MODE_KEY);
@@ -40,7 +42,10 @@ function readMode(): Mode {
 
 /** Jarvis on a running meeting: as a participant the whole time, on "Hey Jarvis", or not at all. */
 export function MeetingJarvis({ meeting }: { meeting: ReturnType<typeof useMeeting> }) {
-  const [mode, setMode] = useState<Mode>(readMode);
+  // The saved choice, read on the client only (the server render can't see localStorage).
+  const stored = useSyncExternalStore(subscribeNoop, readMode, () => "participant" as Mode);
+  const [picked, setPicked] = useState<Mode | null>(null);
+  const mode = picked ?? stored;
   // What Jarvis did on this meeting (newest first): tasks, results, timers, answers.
   const [items, setItems] = useState<Item[]>([]);
   const nextId = useRef(0);
@@ -68,11 +73,19 @@ export function MeetingJarvis({ meeting }: { meeting: ReturnType<typeof useMeeti
         return `${minutes}\nPřepis (konec):\n${transcript}`;
       },
       addAction: (task) => latest.current.addAction(task),
+      end: () => void latest.current.stop(),
+      rename: (t) => latest.current.setTitle(t),
       activity: (a) => setItems((list) => [{ ...a, id: ++nextId.current, at: Date.now() }, ...list].slice(0, 30)),
     }),
     [],
   );
   const jarvis = useJarvis(noCards, hooks);
+  // Jarvis's words go into the meeting transcript (and the .md) as "Jarvis".
+  const { setJarvisSaid } = meeting;
+  const jarvisLog = jarvis.log;
+  useEffect(() => {
+    setJarvisSaid(jarvisLog.filter((l) => l.kind === "jarvis").map((l) => ({ ts: l.ts, text: l.text.replace(/\s*\[[^\]]*\]?\s*/g, " ").trim() })));
+  }, [jarvisLog, setJarvisSaid]);
   // A new meeting starts with an empty list (adjusted during render, not in an effect).
   const [seenStatus, setSeenStatus] = useState(meeting.status);
   if (seenStatus !== meeting.status) {
@@ -97,14 +110,24 @@ export function MeetingJarvis({ meeting }: { meeting: ReturnType<typeof useMeeti
   // Participant: join when the meeting starts, rejoin if the session drops, leave with the meeting.
   const joins = useRef(0);
   const { status: jarvisStatus, start, stop } = jarvis;
+  // Jarvis gets its own copy of the mic track: sharing one track with the transcription stalls one of them.
+  const ownMic = useRef<MediaStream | null>(null);
   useEffect(() => {
     if (!live || mode !== "participant" || jarvisStatus !== "idle" || !meeting.stream || joins.current >= 5) return;
     const t = setTimeout(() => {
       joins.current++;
-      void start(undefined, meeting.stream, { instructions: PARTICIPANT, context: intro(), stayOn: true });
+      ownMic.current?.getTracks().forEach((tr) => tr.stop());
+      ownMic.current = meeting.stream!.clone();
+      void start(undefined, ownMic.current, { instructions: PARTICIPANT, context: intro(), stayOn: true });
     }, joins.current ? 2000 : 0);
     return () => clearTimeout(t);
   }, [live, mode, jarvisStatus, meeting.stream, start]);
+  useEffect(() => {
+    if (jarvisStatus !== "idle") return;
+    ownMic.current?.getTracks().forEach((tr) => tr.stop());
+    ownMic.current = null;
+  }, [jarvisStatus]);
+  useEffect(() => () => ownMic.current?.getTracks().forEach((tr) => tr.stop()), []);
   useEffect(() => {
     if (!live && jarvisStatus !== "idle") stop();
     if (!live) joins.current = 0;
@@ -120,7 +143,7 @@ export function MeetingJarvis({ meeting }: { meeting: ReturnType<typeof useMeeti
   });
 
   const pick = (m: Mode) => {
-    setMode(m);
+    setPicked(m);
     if (m !== "participant" && jarvisStatus !== "idle") stop();
     try {
       localStorage.setItem(MODE_KEY, m);

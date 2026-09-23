@@ -14,20 +14,28 @@ const PROMPTS = {
 };
 
 const session = (mode: keyof typeof PROMPTS, terms: string[]) => ({
-  expires_after: { anchor: "created_at", seconds: 60 },
+  // The transcription session ends when its client secret expires: a meeting needs the maximum (2 h).
+  expires_after: { anchor: "created_at", seconds: mode === "meeting" ? 7200 : 600 },
   session: {
     type: "transcription",
     audio: {
       input: {
         transcription: {
-          model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-live-transcribe",
-          languages: ["cs", "en"],
-          prompt: terms.length ? `${PROMPTS[mode]} Správně psané pojmy a jména: ${terms.join(", ")}.` : PROMPTS[mode],
-          ...(terms.length ? { keywords: terms.slice(0, 50) } : {}),
+          // Meetings: a model with server-side turn detection (commits itself at pauses);
+          // gpt-live-transcribe needs manual commits and dropped sentences after long silences.
+          model: mode === "meeting" ? process.env.OPENAI_MEETING_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe" : process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-live-transcribe",
+          ...(mode === "meeting" ? { language: "cs" } : { languages: ["cs", "en"] }),
+          // Meetings get only the vocabulary: a descriptive prompt gets echoed back on silence.
+          ...(mode === "meeting"
+            ? terms.length
+              ? { prompt: terms.join(", ") }
+              : {}
+            : { prompt: terms.length ? `${PROMPTS[mode]} Správně psané pojmy a jména: ${terms.join(", ")}.` : PROMPTS[mode] }),
+          ...(terms.length && mode !== "meeting" ? { keywords: terms.slice(0, 50) } : {}),
         },
         // A meeting mic sits on the table, dictation is held close.
         noise_reduction: { type: mode === "meeting" ? "far_field" : "near_field" },
-        turn_detection: null,
+        turn_detection: mode === "meeting" ? { type: "server_vad", silence_duration_ms: 700, prefix_padding_ms: 300 } : null,
       },
     },
   },

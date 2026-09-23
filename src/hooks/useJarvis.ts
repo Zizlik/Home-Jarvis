@@ -14,7 +14,8 @@ import { parseFor } from "@/lib/parse";
 import { timerLabel, timers } from "@/lib/timers";
 
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
-export type LogLine = { at: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
+/** `at`: ms since this conversation started; `ts`: wall clock (Date.now()) when the line began. */
+export type LogLine = { at: number; ts: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
 
 /** `ownMic`: the session opened the mic itself (vs. reusing the wake word's) and closes it. */
 type Conn = {
@@ -46,6 +47,11 @@ const OPEN_TOOL: [RegExp, string, string][] = [
 
 /** "spusť časovač na 5 minut", "nastav minutku", "spusť ho": start it, don't just show it. */
 const START = /(?<![\p{L}])(spusť|spust|spusťte|nastav|zapni|pusť|pust|odpočítej|odpocitej|odstartuj|start|dej)(?![\p{L}])/iu;
+
+/** Meeting commands, acted on from the words alone (like opening a page). */
+const END_MEETING =
+  /(?<![\p{L}])(ukonči|ukonci|ukončete|ukončit|ukoncit|skonči|skonci|zastav|zastavit|stopni|ukončíme|ukoncime|končíme|koncime)(?![\p{L}]).{0,25}(meeting\p{L}*|mítink\p{L}*|mitink\p{L}*|porad\p{L}*|nahrávání|nahravani|zápis|schůzk\p{L}*|to)(?![\p{L}])/iu;
+const RENAME_MEETING = /(?<![\p{L}])(?:přejmenuj|prejmenuj|pojmenuj|nazvi|změň název|zmen nazev)(?:\s+(?:meeting|mítink|mitink|poradu|schůzku|to|ho|ji))?(?:\s+(?:na|jako))?\s*[:,]?\s*(.{2,80}?)[.!]?$/iu;
 
 /** Cards that are an answer rather than something to keep ("kolik je 15 % z…"). */
 const ANSWER_CARDS = new Set(["calc", "convert", "timezone", "countdown", "random", "split", "color"]);
@@ -119,6 +125,10 @@ export type MeetingHooks = {
   context: () => string;
   /** Add an action item to the running meeting's minutes. */
   addAction: (task: string) => void;
+  /** "Jarvisi, ukonči meeting". */
+  end: () => void;
+  /** "Jarvisi, přejmenuj meeting na …". */
+  rename: (title: string) => void;
 };
 
 export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, meeting?: MeetingHooks) {
@@ -163,7 +173,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
     setLog((l) => {
       const last = l[l.length - 1];
       if ((kind === "you" || kind === "jarvis") && last?.kind === kind) return [...l.slice(0, -1), { ...last, text: last.text + text }];
-      return [...l, { at: Math.round(performance.now() - t0.current), kind, text }];
+      return [...l, { at: Math.round(performance.now() - t0.current), ts: Date.now(), kind, text }];
     });
   }, []);
 
@@ -221,8 +231,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
     (utterance: string) => {
       if (speculate.current) clearTimeout(speculate.current);
       speculate.current = setTimeout(async () => {
-        // "začni meeting": act on the words alone, even if Jarvis never delegates it.
-        if (OPEN_TOOL.some(([re]) => re.test(utterance))) {
+        // "začni meeting" / "ukonči meeting": act on the words alone, even if Jarvis never delegates it.
+        if (OPEN_TOOL.some(([re]) => re.test(utterance)) || (meetingRef.current && END_MEETING.test(utterance) && /jarvis/i.test(utterance))) {
           const key = utterance.trim().toLowerCase();
           if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
           return;
@@ -254,6 +264,18 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   /** Do what the user asked; returns what Jarvis should say. */
   const handle = useCallback(
     async (utterance: string): Promise<string> => {
+      // Only when addressed: people also say "ukončíme to" to each other.
+      if (meeting && END_MEETING.test(utterance) && /jarvis/i.test(utterance)) {
+        push("tool", "končím meeting");
+        setTimeout(() => meeting.end(), 2500);
+        return "Končím meeting a připravuji zápis. Rozlouč se krátce.";
+      }
+      const rename = meeting ? utterance.match(RENAME_MEETING) : null;
+      if (meeting && rename) {
+        const t = rename[1].trim().replace(/^[„"']|[“"']$/g, "");
+        meeting.rename(t.charAt(0).toUpperCase() + t.slice(1));
+        return `Meeting se teď jmenuje „${t}“.`;
+      }
       const tool = OPEN_TOOL.find(([re]) => re.test(utterance));
       if (tool) {
         push("tool", `otevírám ${tool[1]}`);
