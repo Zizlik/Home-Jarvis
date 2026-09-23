@@ -77,6 +77,54 @@ const onlyWords = (u: string, kind: RegExp) => {
   return hits > 0 && words.every((w) => kind.test(w) || FILLER.test(w)) && words.length <= 6;
 };
 
+/** Jev's "where to keep it" as a card kind (tasks keep a list a list). */
+const targetKind = (t: string, current?: CardIntent | null): CardIntent | null =>
+  t === "calendar" ? "event" : t === "tasks" ? (current === "todo" ? "todo" : "reminder") : t === "notes" ? "note" : null;
+
+const fromJev = (r: IntentResult) => r.source === "jev" && r.aboutShown !== undefined;
+
+/** Where the user wants it: Jev when it's sure, else the words ("do kalendáře"). */
+function targetOf(r: IntentResult, u: string, current?: CardIntent | null): CardIntent | null {
+  if (fromJev(r) && r.target && r.target.value !== "unspecified" && r.target.confidence >= 0.7) return targetKind(r.target.value, current);
+  return targetIntent(u);
+}
+
+/** Jev: "tak díky, to by bylo všechno", "můžeš jít"; the words as a fallback. */
+const wantsHangUp = (r: IntentResult | null, u: string) => isHangUp(u) || (!!r && fromJev(r) && (r.hangUp ?? 0) >= 0.85);
+
+/** What's left after the command words: "" for "jo, přidej to", "mléko" for "jo a přidej ještě mléko". */
+const leftoverWords = (u: string) =>
+  cardText(u)
+    .replace(/(?<![\p{L}])(to|ho|ji|je|že|ze|tě|te|toho|tam|tu|tuhle|tenhle|ten|kartu|prosím|prosim|taky|také|radši|radsi|mi|si|hoď|hod|hodit|dej|dát|dat|přesuň|presun|přehoď|prehod|šoupni|soupni|vlož|vloz|pošli|posli|ulož|uloz|zapiš|zapis|přidej|pridej|přidat|pridat|uložit|ulozit|klidně|klidne|dobře|dobre|jasně|jasne|super|ok|okej|tak|no|jen|yes|ano|jo)(?![\p{L}])/giu, " ")
+    .replace(/[,.!?]/g, " ")
+    .trim();
+
+type Verdict = { kind: "save" } | { kind: "discard" } | { kind: "move"; to: CardIntent };
+
+/**
+ * What to do with the card on screen, from Jev's probabilities with the screen as context:
+ * "jo, přidej to" → save, "ne, tohle nechci" → discard, "šoupni to do kalendáře" → move.
+ * Without Jev, the old word lists decide.
+ */
+function cardVerdict(r: IntentResult, u: string, card: { text: string; intent: CardIntent } | null): Verdict | null {
+  if (!card) return null;
+  if (!fromJev(r)) {
+    const to = targetIntent(u);
+    if (to && to !== card.intent) return { kind: "move", to };
+    if (onlyWords(u, SAVE_WORD)) return { kind: "save" };
+    if (onlyWords(u, DISCARD_WORD)) return { kind: "discard" };
+    return null;
+  }
+  if ((r.aboutShown ?? 0) < 0.6) return null;
+  const act = r.action?.value;
+  const conf = r.action?.confidence ?? 0;
+  const to = targetOf(r, u, card.intent);
+  if (to && to !== card.intent && act !== "discard") return { kind: "move", to };
+  if (act === "discard" && conf >= 0.6) return { kind: "discard" };
+  if ((act === "save" && conf >= 0.6) || ((r.confirm ?? 0) >= 0.8 && act !== "update" && act !== "ask" && !leftoverWords(u))) return { kind: "save" };
+  return null;
+}
+
 /** Jarvis saying goodbye means the conversation is over: hang up in the app too. */
 const GOODBYE = /(?<![\p{L}])(vypínám\s+se|vypinam\s+se|vypínám|nashledanou|na\s+shledanou|končím,?\s+ahoj|měj\s+se|mějte\s+se)(?![\p{L}])/iu;
 
@@ -239,17 +287,35 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   /** Cards live in the Shapeshift input and its saved list, exactly as if typed. */
   const show = useCallback((c: Card) => shapeshift.current?.show(c.text, c.intent), [shapeshift]);
 
-  /** Jev once per distinct text: the speculative call and the delegation share it. */
-  const classifyOnce = useCallback((text: string) => {
-    const key = text.trim().toLowerCase();
-    let p = jev.current.get(key);
-    if (!p) {
-      p = classify(text).catch(() => null);
-      jev.current.set(key, p);
-      if (jev.current.size > 50) jev.current.delete(jev.current.keys().next().value!);
-    }
-    return p;
-  }, []);
+  // What Jarvis said last, for Jev's context.
+  const lastSaid = useRef("");
+  // The card the preview put on screen for an utterance: it isn't "the card on screen" for that same utterance.
+  const shownFor = useRef<string | null>(null);
+  /** What's on screen and what Jarvis just said, so Jev understands "to", "tam", "jo". */
+  const jevContext = useCallback(() => {
+    const shown = shapeshift.current?.current();
+    return [
+      shown?.text.trim() && shown.intent ? `Na obrazovce je karta (${registry[shown.intent].label}): „${shown.text}“.` : "Na obrazovce není žádná karta.",
+      lastSaid.current ? `Jarvis naposledy řekl: „${lastSaid.current.slice(-200)}“.` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }, [shapeshift]);
+
+  /** Jev once per distinct text, with the context as it was the first time (preview and delegation share it). */
+  const classifyOnce = useCallback(
+    (text: string) => {
+      const key = text.trim().toLowerCase();
+      let p = jev.current.get(key);
+      if (!p) {
+        p = classify(text, undefined, jevContext()).catch(() => null);
+        jev.current.set(key, p);
+        if (jev.current.size > 50) jev.current.delete(jev.current.keys().next().value!);
+      }
+      return p;
+    },
+    [jevContext],
+  );
 
   /** Run `work` once per kind+utterance; the preview can start it, the delegation reuses it. */
   const once = useCallback(<T,>(kind: string, utterance: string, work: () => Promise<T>): Promise<T> => {
@@ -295,13 +361,6 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           hangUpRef.current();
           return;
         }
-        // "ulož to" / "přidat" / "zahoď to" with a card on screen: do it now, from the words alone.
-        const shownNow = shapeshift.current?.current();
-        if (!meetingRef.current && !agentAsked.current && shownNow?.text.trim() && shownNow.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
-          const key = utterance.trim().toLowerCase();
-          if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
-          return;
-        }
         // "začni meeting" / "ukonči meeting": act on the words alone, even if Jarvis never delegates it.
         if (OPEN_TOOL.some(([re]) => re.test(utterance)) || (meetingRef.current && END_MEETING.test(utterance) && /jarvis/i.test(utterance))) {
           const key = utterance.trim().toLowerCase();
@@ -310,11 +369,25 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         }
         const text = cardText(utterance);
         if (utterance.trim().length < 3) return;
+        const shownBefore = shapeshift.current?.current();
         const r = await classifyOnce(utterance);
         if (!r || turn.current.text !== utterance) return; // stale
+        // Jev heard "that's all": off now.
+        if (wantsHangUp(r, utterance) && !meetingRef.current) {
+          hangUpRef.current();
+          return;
+        }
+        // Jev: this is about the card on screen (save, discard, move it): do it now.
+        const onScreen = shownBefore?.text.trim() && shownBefore.intent ? { text: shownBefore.text, intent: shownBefore.intent } : null;
+        if (!meetingRef.current && !agentAsked.current && cardVerdict(r, utterance, onScreen)) {
+          const key = utterance.trim().toLowerCase();
+          if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
+          return;
+        }
         const d = decide(r);
         if (d.action === "create" && r.intent.value !== "none" && text.length >= 3) {
-          show(buildCard(text, r, targetIntent(utterance) ?? undefined));
+          shownFor.current = utterance.trim().toLowerCase();
+          show(buildCard(text, r, targetOf(r, utterance) ?? undefined));
           if (needsCleanup(text)) void once("clean", utterance, () => postCard({ utterance: text }));
         }
         // Get the slow parts going now; the delegation picks them up when it arrives.
@@ -376,43 +449,41 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         const first = await handleRef.current(tail[1]);
         return `${first} ${await handleRef.current(tail[2])}`;
       }
-      // With a card on screen, "ulož to" / "přidat" / "ano" saves it and "zahoď to" discards it: no Jev needed.
+      const jev = await classifyOnce(utterance);
+      if (!jev) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
+      if (wantsHangUp(jev, utterance) && (!meeting || /jarvis/i.test(lastSentence(utterance)))) {
+        hangUpRef.current();
+        return "Uživatel tě vypnul. Nic neříkej.";
+      }
+      // The card on screen (unless the preview just made it from these same words).
       const onScreen = shapeshift.current?.current();
-      if (!meeting && !agentAsked.current && onScreen?.text.trim() && onScreen.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
-        const save = onlyWords(utterance, SAVE_WORD);
+      const key = utterance.trim().toLowerCase();
+      const card = !meeting && onScreen?.text.trim() && onScreen.intent && shownFor.current !== key ? { text: onScreen.text, intent: onScreen.intent } : null;
+      const verdict = agentAsked.current ? null : cardVerdict(jev, utterance, card);
+      if (verdict && card) {
+        const kind = verdict.kind;
         const last = lastCommand.current;
-        if (last && Date.now() - last.at < 5000 && last.action === (save ? "save" : "discard")) return last.result;
-        const ok = save ? shapeshift.current?.save() : (shapeshift.current?.discard(), true);
-        const result = ok ? "Hotovo. Řekni jen „Hotovo.“" : "Kartu se nepodařilo uložit.";
+        if (last && Date.now() - last.at < 5000 && last.action === kind) return last.result;
+        if (kind === "move") shapeshift.current?.show(card.text, verdict.to);
+        const ok = kind === "discard" ? (shapeshift.current?.discard(), true) : shapeshift.current?.save();
+        const result = !ok
+          ? "Kartu se nepodařilo uložit."
+          : kind === "move"
+            ? `Přesunuto a uloženo do ${DESTINATION[verdict.to] ?? "Googlu"}. Řekni jen „Hotovo.“`
+            : "Hotovo. Řekni jen „Hotovo.“";
         ack();
-        push("tool", `${save ? "uloženo" : "zahozeno"} (bez Jeva)`);
-        lastCommand.current = { action: save ? "save" : "discard", at: Date.now(), result };
+        push("tool", `Jev: ${kind}${kind === "move" ? ` → ${verdict.to}` : ""} (karta na obrazovce ${Math.round((jev.aboutShown ?? 0) * 100)} %)`);
+        lastCommand.current = { action: kind, at: Date.now(), result };
         return result;
       }
-      // "hoď to do kalendáře": move the card on screen (or the one just saved) there, and save it.
-      const named = targetIntent(utterance);
-      const leftover = cardText(utterance)
-        .replace(/(?<![\p{L}])(to|ho|ji|je|že|ze|tě|te|toho|tam|tu|tuhle|tenhle|ten|kartu|prosím|prosim|taky|také|radši|radsi|mi|si|hoď|hod|hodit|dej|dát|dat|přesuň|presun|přehoď|prehod|vlož|vloz|pošli|posli|ulož|uloz|zapiš|zapis|přidej|pridej|yes|ano|jo)(?![\p{L}])/giu, " ")
-        .replace(/[,.!?]/g, " ")
-        .trim();
-      // "dej to do Googlu" = save the card on screen (it syncs to where its kind goes).
-      if (!meeting && !named && !leftover && /(?<![\p{L}])(do|v)\s+googl\p{L}*/iu.test(utterance) && shapeshift.current?.current().text.trim()) {
-        shapeshift.current?.save();
-        ack();
-        return "Uloženo. Řekni jen „Hotovo.“";
-      }
-      if (!meeting && named && !leftover) {
-        const shownCard = shapeshift.current?.current();
-        if (shownCard?.text.trim()) {
-          shapeshift.current?.show(shownCard.text, named);
-          shapeshift.current?.save();
-          ack();
-          return `Přesunuto a uloženo do ${DESTINATION[named] ?? "Googlu"}. Řekni jen „Hotovo.“`;
-        }
+      // A destination with nothing to put there: move the card just saved, or remember it for the next sentence.
+      const named = meeting ? null : targetOf(jev, utterance, card?.intent);
+      const leftover = leftoverWords(utterance);
+      if (named && !leftover && !card) {
         const recent = savedItems.getSnapshot()[0];
-        if (recent && Date.now() - recent.createdAt < 10 * 60_000 && recent.intent !== named) {
+        if (recent && Date.now() - recent.createdAt < 10 * 60_000 && recent.intent !== named && (jev.aboutShown ?? 1) >= 0.4) {
           // The sync sees the new kind and moves it in Google (removes the old, writes the new).
-          const c = buildCard(recent.text, { ...(await classifyOnce(recent.text))!, intent: { value: named, confidence: 1, probabilities: {} } }, named);
+          const c = buildCard(recent.text, jev, named);
           savedItems.update((list) => list.map((x) => (x.id === recent.id ? { ...x, intent: named, summary: c.summary } : x)));
           ack();
           return `Přesunuto do ${DESTINATION[named] ?? "Googlu"}. Řekni jen „Hotovo.“`;
@@ -420,10 +491,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         pendingTarget.current = { intent: named, at: Date.now() };
         return "Poslouchám, co tam mám zapsat? Řekni jen „Co tam mám dát?“";
       }
-      const jev = await classifyOnce(utterance);
-      if (!jev) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
-      // "…do kalendáře" makes it an event whatever Jev guessed (card and Google destination must match);
-      // a destination said just before a pause still counts.
+      // The destination the user named (or said just before a pause) decides the card kind.
       const carried = pendingTarget.current && Date.now() - pendingTarget.current.at < 15_000 ? pendingTarget.current.intent : null;
       pendingTarget.current = null;
       const target = named ?? carried;
@@ -707,6 +775,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
               if (!turn.current.jarvisSpoke && turn.current.text.trim()) history.current.push(`Uživatel: ${turn.current.text.trim()}`);
               turn.current.jarvisSpoke = true;
               spoken += ev.delta ?? "";
+              lastSaid.current = spoken;
               if (!meetingRef.current && GOODBYE.test(spoken) && !goodbye) {
                 goodbye = true;
                 setTimeout(() => hangUpRef.current(), 1800);

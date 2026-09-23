@@ -46,6 +46,9 @@ export type Action = (typeof ACTIONS)[number];
 /** Jarvis: what a question is about, so common ones skip the agent model. */
 export const ASK_TOPICS = ["calendar", "tasks", "email", "notes", "meetings", "web", "none"] as const;
 export type AskTopic = (typeof ASK_TOPICS)[number];
+/** Jarvis: where the item should be kept. */
+export const TARGETS = ["calendar", "tasks", "notes", "unspecified"] as const;
+export type Target = (typeof TARGETS)[number];
 
 export type Tone = (typeof TONES)[number];
 export type EventMode = (typeof EVENT_MODES)[number];
@@ -99,10 +102,16 @@ export const intentResultSchema = z.object({
   source: z.enum(["jev", "mock"]).optional(),
   action: answerSchema(ACTIONS).optional(),
   askTopic: answerSchema(ASK_TOPICS).optional(),
+  target: answerSchema(TARGETS).optional(),
+  /** 0..1: about the card on screen / wants to hang up / says yes to what Jarvis asked. */
+  aboutShown: z.number().optional(),
+  hangUp: z.number().optional(),
+  confirm: z.number().optional(),
 });
 export type IntentResult = z.infer<typeof intentResultSchema>;
 
-export const intentRequestSchema = z.object({ text: z.string().max(2000) });
+/** `context`: what's on screen and what was just said, so Jev gets "to", "tam", "jo". */
+export const intentRequestSchema = z.object({ text: z.string().max(2000), context: z.string().max(1500).optional() });
 
 function neutralAnswer<T extends string>(value: T): Answer<T> {
   return { value, confidence: 1, probabilities: { [value]: 1 } as Partial<Record<T, number>> };

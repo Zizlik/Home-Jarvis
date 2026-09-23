@@ -13,7 +13,8 @@ export async function POST(request: Request) {
   if (!body.success) return Response.json({ error: "Expected { text: string }" }, { status: 400 });
 
   const text = body.data.text;
-  const key = normalizeKey(text);
+  const context = body.data.context?.trim() || undefined;
+  const key = normalizeKey(context ? `${context}\n${text}` : text);
   if (key.length < 2) return Response.json(noneResult({ model: "none" }));
 
   const hit = cache.get(key);
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await classifyWithJev(text, request.signal);
+    const result = await classifyWithJev(text, request.signal, context);
     console.info(`[jev] ${result.model} ${result.latencyMs}ms ${result.questionCount}q "${key.slice(0, 40)}" → ${result.intent.value}`);
     cache.set(key, result);
     return Response.json(result);

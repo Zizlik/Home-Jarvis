@@ -45,9 +45,9 @@ function answer<T extends string>(r: { choice: T; confidence: number; probabilit
 }
 
 /** One call, every question in parallel. Throws on network / API errors. */
-export async function classifyWithJev(text: string, signal?: AbortSignal): Promise<IntentResult> {
+export async function classifyWithJev(text: string, signal?: AbortSignal, context?: string): Promise<IntentResult> {
   const started = performance.now();
-  const res = await getClient().systemOne({ state: { text }, questions }, { signal });
+  const res = await getClient().systemOne({ state: context ? { context, text } : { text }, questions }, { signal });
   const latencyMs = Math.round(performance.now() - started);
   const a = res.answers;
 
@@ -70,6 +70,10 @@ export async function classifyWithJev(text: string, signal?: AbortSignal): Promi
     },
     action: answer(a.action),
     askTopic: answer(a.askTopic),
+    target: answer(a.target),
+    aboutShown: a.aboutShown.noul,
+    hangUp: a.hangUp.noul,
+    confirm: a.confirm.noul,
     latencyMs,
     questionCount: QUESTION_COUNT,
     model: res.model,

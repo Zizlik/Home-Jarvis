@@ -113,6 +113,16 @@ export const questions = {
     web: "General knowledge, news, weather, prices or anything to look up on the internet",
     none: "Not a question, or none of the above",
   }),
+  // ── Jarvis: context-aware decisions (the state may carry what's on screen and what was just said) ──
+  target: choice("Where does the person want the item to be kept", {
+    calendar: "In the calendar, as an event at a time",
+    tasks: "In the task list, as a to-do",
+    notes: "In notes",
+    unspecified: "Not said",
+  }),
+  aboutShown: noul("The person is talking about the item that is already shown on the screen (it, that, the card), not a new one"),
+  hangUp: noul("The person wants to end the conversation with the assistant right now"),
+  confirm: noul("The person says yes / agrees to what the assistant just proposed or asked"),
   hasExplicitOptions: noul("The text names two or more explicit options to pick between"),
   isShoppingList: noul("The listed items are things to buy"),
 };

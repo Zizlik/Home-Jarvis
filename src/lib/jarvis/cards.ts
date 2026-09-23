@@ -7,11 +7,11 @@ export type Card = { text: string; intent: CardIntent; label: string; summary: s
 export type Decision = { action: Action; actionConfidence: number; result: IntentResult };
 
 /** One Jev call answers both "which card" and "what to do". */
-export async function classify(text: string, signal?: AbortSignal): Promise<IntentResult | null> {
+export async function classify(text: string, signal?: AbortSignal, context?: string): Promise<IntentResult | null> {
   const res = await fetch("/api/intent", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(context ? { text, context } : { text }),
     signal,
   });
   if (!res.ok) return null;
