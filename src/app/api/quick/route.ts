@@ -74,8 +74,8 @@ async function lastMeeting() {
   if (!m) return "Zatím nemáš nahraný žádný meeting.";
   const when = new Date(m.startedAt).toLocaleString("cs-CZ", { timeZone: TZ, dateStyle: "medium", timeStyle: "short" });
   const parts = [
-    `Poslední meeting ${when}: ${m.minutes.title}.`,
-    m.minutes.summary.slice(0, 5).join(" "),
+    `Poslední meeting ${when}: ${m.title || m.minutes.title}${m.participants.length ? `, účastníci ${m.participants.join(", ")}` : ""}.`,
+    m.minutes.overview || m.minutes.summary.slice(0, 5).join(" "),
     m.minutes.decisions.length ? `Rozhodnutí: ${m.minutes.decisions.join("; ")}.` : "",
     m.minutes.actions.length ? `Úkoly: ${m.minutes.actions.map(actionText).join("; ")}.` : "",
     m.minutes.questions.length ? `Otevřené: ${m.minutes.questions.join("; ")}.` : "",

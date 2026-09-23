@@ -14,7 +14,7 @@ Příklad: na meetingu mluví dva lidé a Jarvis poslouchá a píše zápis. Nap
 
 ### Režim meetingu
 
-**Hotovo (v1, 2026-09-23):** stránka `/meeting`, průběžný přepis, zápis každou minutu, uložení do Keep, úkoly do Tasks, archiv a dotazy na minulé meetingy. Zbývá: rozlišení mluvčích (z nahrávky přes diarizaci), slovník jmen a firem pro přepis, a subagenti níže.
+**Hotovo (v1, 2026-09-23):** stránka `/meeting`, průběžný přepis, zápis každou minutu, uložení do Keep, úkoly do Tasks, archiv a dotazy na minulé meetingy. **v2:** název, datum, účastníci, rozlišení mluvčích z nahrávky (gpt-4o-transcribe-diarize, do ~100 min), finální souhrnný zápis z celého přepisu, úkoly jako podúkoly v Google Tasks, celý přepis na rozkliknutí, export .md pro Obsidian, slovník jmen a pojmů v nastavení. Zbývá: subagenti níže, delší nahrávky než ~100 min po částech.
 
 - Poslouchá pořád, ale levným přepisem (`gpt-live-transcribe`, asi 1 $ za hodinu), ne drahým hlasovým modelem.
 - Průběžně píše zápis. Každých pár minut se levný model podívá, jestli z hovoru neplyne něco k udělání (graf, výpočet, úkol).

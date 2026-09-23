@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     const res = await client.responses.create(
       {
         model: settings.agentModel,
-        instructions: INSTRUCTIONS,
+        instructions: settings.vocabulary.trim() ? `${INSTRUCTIONS}\nSprávný pravopis jmen a pojmů (přepis je může komolit): ${settings.vocabulary.trim()}.` : INSTRUCTIONS,
         input: `Dosavadní zápis:\n${previous.success ? JSON.stringify(previous.data) : "(zatím žádný)"}\n\nNový přepis:\n${transcript}`,
         reasoning: { effort: "none" },
         text: { format: FORMAT },

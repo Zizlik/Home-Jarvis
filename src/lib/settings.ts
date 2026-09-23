@@ -57,6 +57,8 @@ export const settingsSchema = z.object({
   /** Model for questions and MCP work (anything Jev can't do with a card). */
   agentModel: z.string().min(1).default("gpt-5.6-luna"),
   mcp: z.array(mcpServerSchema).default([]),
+  /** Names, companies and terms spelled right in transcripts and minutes ("Noorberry, Comgate"). */
+  vocabulary: z.string().max(2000).default(""),
   google: googleSyncSchema.default(googleSyncSchema.parse({})),
 });
 export type Settings = z.infer<typeof settingsSchema>;

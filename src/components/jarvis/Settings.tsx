@@ -244,6 +244,16 @@ export function Settings() {
             />
           </Section>
 
+          <Section title="Slovník" hint="Jména, firmy a pojmy, které má přepis a zápis psát správně. Oddělené čárkami. Jména účastníků meetingu se přidají samy.">
+            <Textarea
+              value={settings.vocabulary}
+              onChange={(e) => update({ vocabulary: e.target.value })}
+              placeholder="Noorberry, Comgate, Adfility, Honza Škaroupka"
+              aria-label="Slovník"
+              rows={3}
+            />
+          </Section>
+
           <Section title="Google" hint="Kalendář, Tasks a Keep: kam se uložené karty zapíšou. Gmail a kalendář pak Jarvis použije i k odpovědím.">
             <GoogleSettings value={settings.google} onChange={(patch) => update({ google: { ...settings.google, ...patch } })} />
           </Section>

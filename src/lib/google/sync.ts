@@ -18,6 +18,7 @@ export type SyncCard =
   | { kind: "event"; title: string; start: string; end?: string | null; allDay: boolean; description?: string; location?: string | null }
   | { kind: "task"; title: string; due?: string | null; notes?: string }
   | { kind: "tasklist"; title: string; items: string[] }
+  | { kind: "tasktree"; title: string; notes?: string; items: { title: string; notes?: string }[] }
   | { kind: "keep-note"; title: string; text: string }
   | { kind: "keep-list"; title: string; items: string[] };
 
@@ -61,6 +62,19 @@ export async function create(card: SyncCard): Promise<SyncRef> {
       for (const item of card.items) {
         const q = new URLSearchParams({ parent: parent.id, ...(previous ? { previous } : {}) });
         const t = await google<{ id: string }>(`${TASKS}?${q}`, { method: "POST", body: JSON.stringify({ title: item }) });
+        ids.push(t.id);
+        previous = t.id;
+      }
+      return { target: "tasks", id: parent.id, parentIds: ids, url: parent.webViewLink };
+    }
+    case "tasktree": {
+      // A parent task (e.g. the meeting) with its action items as subtasks, each with its own notes.
+      const parent = await google<{ id: string; webViewLink?: string }>(TASKS, { method: "POST", body: JSON.stringify({ title: card.title, notes: card.notes }) });
+      const ids: string[] = [];
+      let previous: string | undefined;
+      for (const item of card.items) {
+        const q = new URLSearchParams({ parent: parent.id, ...(previous ? { previous } : {}) });
+        const t = await google<{ id: string }>(`${TASKS}?${q}`, { method: "POST", body: JSON.stringify({ title: item.title, notes: item.notes }) });
         ids.push(t.id);
         previous = t.id;
       }

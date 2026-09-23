@@ -1,3 +1,4 @@
+import { readSettings } from "@/lib/settings";
 import { LRU } from "@/lib/lru";
 
 export const runtime = "nodejs";
@@ -12,7 +13,7 @@ const PROMPTS = {
   meeting: "Pracovní meeting v češtině, občas anglické termíny. Více mluvčích. Zachovej jména, čísla, částky a termíny. Čísla piš číslicemi.",
 };
 
-const session = (mode: keyof typeof PROMPTS) => ({
+const session = (mode: keyof typeof PROMPTS, terms: string[]) => ({
   expires_after: { anchor: "created_at", seconds: 60 },
   session: {
     type: "transcription",
@@ -21,7 +22,8 @@ const session = (mode: keyof typeof PROMPTS) => ({
         transcription: {
           model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-live-transcribe",
           languages: ["cs", "en"],
-          prompt: PROMPTS[mode],
+          prompt: terms.length ? `${PROMPTS[mode]} Správně psané pojmy a jména: ${terms.join(", ")}.` : PROMPTS[mode],
+          ...(terms.length ? { keywords: terms.slice(0, 50) } : {}),
         },
         // A meeting mic sits on the table, dictation is held close.
         noise_reduction: { type: mode === "meeting" ? "far_field" : "near_field" },
@@ -30,6 +32,14 @@ const session = (mode: keyof typeof PROMPTS) => ({
     },
   },
 });
+
+/** The user's vocabulary plus names sent with the request (meeting participants). */
+async function terms(request: Request) {
+  const vocab = (await readSettings()).vocabulary;
+  const body = (await request.clone().json().catch(() => null)) as { names?: unknown } | null;
+  const names = Array.isArray(body?.names) ? body.names.filter((n): n is string => typeof n === "string") : [];
+  return [...new Set([...names, ...vocab.split(/[,;\n]+/)].map((t) => t.trim()).filter((t) => t && t.length <= 60))];
+}
 
 /** Mints a short-lived client secret so the browser can stream the mic straight to OpenAI. */
 export async function POST(request: Request) {
@@ -45,7 +55,7 @@ export async function POST(request: Request) {
   const res = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify(session(new URL(request.url).searchParams.get("mode") === "meeting" ? "meeting" : "notes")),
+    body: JSON.stringify(session(new URL(request.url).searchParams.get("mode") === "meeting" ? "meeting" : "notes", await terms(request))),
     signal: AbortSignal.timeout(5000),
   }).catch((err: unknown) => err as Error);
   if (res instanceof Error || !res.ok) {

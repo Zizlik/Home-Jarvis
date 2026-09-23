@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type OpenAI from "openai";
 import { account, google } from "./auth";
 import { keepToken } from "./keep";
-import { minutesText } from "@/lib/meeting/minutes";
+import { minutesText, transcriptText } from "@/lib/meeting/minutes";
 import { listMeetings } from "@/lib/meeting/store";
 
 /**
@@ -198,8 +198,13 @@ export async function runGoogleTool(name: string, args: Record<string, unknown>,
     case "meeting_notes": {
       const q = typeof args.query === "string" ? args.query.toLowerCase() : "";
       const all = await listMeetings();
-      const hits = all.filter((m) => !q || `${minutesText(m.minutes, "")} ${m.transcript}`.toLowerCase().includes(q)).slice(0, 5);
-      return hits.map((m) => ({ začátek: m.startedAt, zápis: minutesText(m.minutes, new Date(m.startedAt).toLocaleString("cs-CZ", { timeZone: "Europe/Prague" })).slice(0, 3000) }));
+      const hits = all.filter((m) => !q || `${m.title} ${minutesText(m.minutes, "")} ${transcriptText(m)}`.toLowerCase().includes(q)).slice(0, 5);
+      return hits.map((m) => ({
+        název: m.title,
+        začátek: m.startedAt,
+        účastníci: m.participants,
+        zápis: `${m.minutes.overview}\n${minutesText(m.minutes, new Date(m.startedAt).toLocaleString("cs-CZ", { timeZone: "Europe/Prague" }))}`.slice(0, 3000),
+      }));
     }
     default:
       return { chyba: `Neznámý nástroj ${name}` };

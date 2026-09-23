@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EMPTY_MINUTES, type Minutes } from "@/lib/meeting/minutes";
+import { EMPTY_MINUTES, type MeetingRecord, type Minutes, type Segment } from "@/lib/meeting/minutes";
 
-export type MeetingStatus = "idle" | "connecting" | "live" | "stopping" | "done";
-export type Segment = { at: number; text: string };
+/** idle → connecting → live → stopping → processing (who spoke + final minutes) → done (review) */
+export type MeetingStatus = "idle" | "connecting" | "live" | "stopping" | "processing" | "done";
+export type { Segment };
 
 /** A pause this long ends a segment (committed for its final transcript). */
 const PAUSE_MS = 2000;
@@ -29,6 +30,13 @@ export function useMeeting() {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [endedAt, setEndedAt] = useState<number | null>(null);
+  const [title, setTitle] = useState("");
+  const [participants, setParticipants] = useState<string[]>([]);
+  /** Diarization label → name, guessed at the end and editable. */
+  const [speakers, setSpeakers] = useState<Record<string, string>>({});
+  /** What the processing step is doing, for the UI. */
+  const [step, setStep] = useState<string | null>(null);
 
   const mic = useRef<MediaStream | null>(null);
   const conn = useRef<Conn | null>(null);
@@ -43,6 +51,16 @@ export function useMeeting() {
   const minutesRef = useRef<Minutes>(EMPTY_MINUTES);
   const minutesBusy = useRef<Promise<void> | null>(null);
   const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
+  // The recording for "who spoke" (webm/opus at 32 kbps ≈ 0.24 MB a minute; 25 MB ≈ 100 min).
+  const recorder = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  // stop() reads the latest title and participants.
+  const titleRef = useRef(title);
+  const participantsRef = useRef(participants);
+  useEffect(() => {
+    titleRef.current = title;
+    participantsRef.current = participants;
+  }, [title, participants]);
   // connect() reconnects itself when a session drops.
   const reconnect = useRef<() => Promise<void>>(async () => undefined);
 
@@ -80,7 +98,11 @@ export function useMeeting() {
   }, []);
 
   const connect = useCallback(async (): Promise<void> => {
-    const res = await fetch("/api/voice?mode=meeting", { method: "POST" });
+    const res = await fetch("/api/voice?mode=meeting", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ names: participantsRef.current }),
+    });
     const body = (await res.json()) as { secret?: string; error?: string };
     if (!res.ok || !body.secret) throw new Error(body.error ?? "Přepis se nepodařilo spustit.");
     const pc = new RTCPeerConnection();
@@ -102,7 +124,7 @@ export function useMeeting() {
         partialRef.current = "";
         setPartial("");
         if (text) {
-          const seg = { at: Math.round((segmentStart.current - t0.current) / 1000), text };
+          const seg: Segment = { at: Math.round((segmentStart.current - t0.current) / 1000), text, speaker: null };
           all.current = [...all.current, seg];
           setSegments(all.current);
         }
@@ -147,8 +169,19 @@ export function useMeeting() {
     minutesRef.current = EMPTY_MINUTES;
     setSegments([]);
     setMinutes(EMPTY_MINUTES);
+    setSpeakers({});
+    setEndedAt(null);
     try {
       mic.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      chunks.current = [];
+      try {
+        const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t));
+        recorder.current = new MediaRecorder(mic.current, { ...(type ? { mimeType: type } : {}), audioBitsPerSecond: 32_000 });
+        recorder.current.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
+        recorder.current.start(10_000);
+      } catch {
+        recorder.current = null; // no recording: the live transcript still works, just without speakers
+      }
       running.current = true;
       t0.current = performance.now();
       await connect();
@@ -174,23 +207,74 @@ export function useMeeting() {
     await new Promise((r) => setTimeout(r, 2500));
     running.current = false;
     if (pauseTimer.current) clearTimeout(pauseTimer.current);
+    const rec = recorder.current;
+    const recorded =
+      rec && rec.state !== "inactive"
+        ? new Promise<Blob>((resolve) => {
+            rec.onstop = () => resolve(new Blob(chunks.current, { type: rec.mimeType }));
+            rec.stop();
+          })
+        : Promise.resolve(null);
     conn.current?.dc.close();
     conn.current?.pc.close();
     conn.current = null;
     mic.current?.getTracks().forEach((t) => t.stop());
     void wakeLock.current?.release().catch(() => undefined);
     if (partialRef.current.trim()) {
-      all.current = [...all.current, { at: Math.round((performance.now() - t0.current) / 1000), text: partialRef.current.trim() }];
+      all.current = [...all.current, { at: Math.round((performance.now() - t0.current) / 1000), text: partialRef.current.trim(), speaker: null }];
       setSegments(all.current);
       partialRef.current = "";
       setPartial("");
     }
+    setEndedAt(Date.now());
     await minutesBusy.current;
-    await updateMinutes();
+    setStatus("processing");
+
+    // Who spoke: the recording, diarized. Falls back to the live transcript without names.
+    const audio = await recorded;
+    if (audio?.size) {
+      setStep("Rozlišuji, kdo mluvil…");
+      const form = new FormData();
+      form.set("audio", audio, "meeting.webm");
+      const res = await fetch("/api/meeting/diarize", { method: "POST", body: form }).catch(() => null);
+      const body = (await res?.json().catch(() => null)) as { segments?: Segment[]; error?: string } | null;
+      if (body?.segments?.length) {
+        all.current = body.segments;
+        setSegments(body.segments);
+      } else if (body?.error) setError(`${body.error} Zápis bude bez jmen.`);
+    }
+
+    // The final minutes, from the whole transcript at once, and a guess who A, B, … are.
+    setStep("Píšu finální zápis…");
+    const res = await fetch("/api/meeting/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: titleRef.current, participants: participantsRef.current, segments: all.current }),
+    }).catch(() => null);
+    const body = (await res?.json().catch(() => null)) as { minutes?: Minutes; speakers?: Record<string, string>; error?: string } | null;
+    if (body?.minutes) {
+      minutesRef.current = body.minutes;
+      setMinutes(body.minutes);
+      setSpeakers(body.speakers ?? {});
+      if (!titleRef.current.trim()) setTitle(body.minutes.title);
+      // Names the model recognized that weren't listed become participants.
+      const named = Object.values(body.speakers ?? {});
+      setParticipants((p) => [...p, ...named.filter((n) => !p.includes(n))]);
+    } else {
+      setError(body?.error ?? "Finální zápis se nepodařilo vytvořit, zůstává průběžný.");
+      await updateMinutes();
+    }
+    setStep(null);
     setStatus("done");
   }, [commit, updateMinutes]);
 
   const reset = useCallback(() => {
+    setStep(null);
+    setTitle("");
+    setParticipants([]);
+    setSpeakers({});
+    setEndedAt(null);
+    setError(null);
     all.current = [];
     summarized.current = 0;
     minutesRef.current = EMPTY_MINUTES;
@@ -211,11 +295,51 @@ export function useMeeting() {
   useEffect(
     () => () => {
       running.current = false;
+      if (recorder.current?.state === "recording") recorder.current.stop();
       conn.current?.pc.close();
       mic.current?.getTracks().forEach((t) => t.stop());
     },
     [],
   );
 
-  return { status, segments, partial, minutes, setMinutes, updating, error, startedAt, start, stop, reset, updateMinutes };
+  /** The meeting as it will be archived, with the user's edits. */
+  const record = useCallback(
+    (): MeetingRecord | null =>
+      startedAt
+        ? {
+            id: new Date(startedAt).toISOString().replace(/[:.]/g, "-"),
+            title: title.trim() || minutes.title || "Meeting",
+            startedAt: new Date(startedAt).toISOString(),
+            endedAt: new Date(endedAt ?? Date.now()).toISOString(),
+            participants,
+            speakers,
+            segments,
+            minutes,
+          }
+        : null,
+    [startedAt, endedAt, title, minutes, participants, speakers, segments],
+  );
+
+  return {
+    status,
+    step,
+    segments,
+    partial,
+    minutes,
+    setMinutes,
+    updating,
+    error,
+    startedAt,
+    title,
+    setTitle,
+    participants,
+    setParticipants,
+    speakers,
+    setSpeakers,
+    record,
+    start,
+    stop,
+    reset,
+    updateMinutes,
+  };
 }
