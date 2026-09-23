@@ -33,7 +33,7 @@ const IDLE_MS = 30_000;
 
 /** "…, ulož to" at the end of a dictation: the card first, then the command. */
 const TRAILING_COMMAND =
-  /^(.*\S)[\s,.;!…]+((?:(?:a|tak|no|díky|dík|diky|super|dobře|dobre)[\s,.!]+)*(?:ulož|uloz|uložit|ulozit|zruš|zrus|zrušit|zrusit|zahoď|zahod|smaž|smaz)(?:\s+(?:to|ji|ho|tu kartu|kartu))?)[\s.!…]*$/iu;
+  /^(.*\S)[\s,.;!…]+((?:(?:a|tak|no|díky|dík|diky|super|dobře|dobre)[\s,.!]+)*(?:ulož|uloz|uložit|ulozit|přidat|pridat|přidej|pridej|zruš|zrus|zrušit|zrusit|zahoď|zahod|smaž|smaz)(?:\s+(?:to|ji|ho|tu kartu|kartu))?)[\s.!…]*$/iu;
 
 /** The last sentence of what was said. */
 const lastSentence = (u: string) => {
@@ -464,7 +464,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           if (!current) {
             const c = buildCard(cardText(utterance), r);
             show(c);
-            return `Zobrazená karta, zatím neuložená. ${describe(c)}.`;
+            return `Karta je na obrazovce: ${describe(c)}. Řekni to jednou krátkou větou a na nic se neptej.`;
           }
           const revised = await once("revise", utterance, () => postCard({ card: current.text, change: utterance }));
           if (!revised) return "Změnu se nepodařilo použít, řekni ji prosím jinak.";
