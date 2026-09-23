@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion, MotionConfig, useReducedMotion, useSpring } from "motion/react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, type Ref, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { registry } from "@/components/intents/registry";
 import { useDemoScript } from "@/hooks/useDemoScript";
 import { useIntent } from "@/hooks/useIntent";
@@ -68,7 +68,27 @@ function IntentCard<K extends CardIntent>(props: {
   return <CardView {...props} data={data} />;
 }
 
-export function Shapeshift() {
+/** Lets another component (Jarvis's voice) drive the input like a person typing. */
+export type ShapeshiftController = {
+  /** Put text in the input with its card already decided (no waiting for Jev). */
+  show: (text: string, intent: CardIntent) => void;
+  /** Save the shown card to the list, like Enter. */
+  save: () => boolean;
+  /** Clear the input, like Escape. */
+  discard: () => void;
+  current: () => { text: string; intent: CardIntent | null };
+};
+
+type ShapeshiftProps = {
+  controllerRef?: Ref<ShapeshiftController>;
+  /** Replaces the dictation mic at the end of the input. */
+  inputAction?: ReactNode;
+  /** Shown under the card, above the saved list. */
+  children?: ReactNode;
+  className?: string;
+};
+
+export function Shapeshift({ controllerRef, inputAction, children, className }: ShapeshiftProps = {}) {
   const flags = useSearchFlags();
   const reduce = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -208,6 +228,17 @@ export function Shapeshift() {
     });
   };
 
+  useImperativeHandle(controllerRef, () => ({
+    show: (t, k) => {
+      setText(t);
+      setMem(force(k, t));
+      setGated(neutralGated);
+    },
+    save: complete,
+    discard: reset,
+    current: () => ({ text, intent }),
+  }));
+
   const pick = (picked: CardIntent) => {
     let t = text;
     if (!t.trim()) {
@@ -290,7 +321,7 @@ export function Shapeshift() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <main id="main" className="mx-auto w-full max-w-[560px] px-4 pt-[14vh] pb-24 sm:px-0 sm:pt-[22vh]">
+      <main id="main" className={cn("mx-auto w-full max-w-[560px] px-4 pt-[14vh] pb-24 sm:px-0 sm:pt-[22vh]", className)}>
         <h1 className="sr-only">Shapeshift</h1>
         <MorphContainer readiness={readiness} edge={ghost ? null : (meta?.edge ?? null)}>
           <motion.div layout="position" className="relative flex h-[72px] items-center px-5">
@@ -315,7 +346,7 @@ export function Shapeshift() {
               className="relative z-[1] h-8 w-full bg-transparent pe-6 text-[22px] leading-8 font-[450] tracking-[-0.01em] text-foreground caret-brand outline-none"
             />
             {text === "" && <CyclingPlaceholder />}
-            <button
+            {inputAction ?? <button
               type="button"
               onClick={toggleMic}
               disabled={dictation.status === "connecting" || dictation.status === "finishing"}
@@ -336,7 +367,7 @@ export function Shapeshift() {
               ) : (
                 <Mic className="size-[18px]" aria-hidden />
               )}
-            </button>
+            </button>}
             <span
               aria-hidden
               className={cn(
@@ -374,6 +405,8 @@ export function Shapeshift() {
           active={chip}
           onPick={pick}
         />
+
+        {children}
 
         <RecentStack items={saved.filter((x) => x.id !== editingId)} flyingId={flyingId} onOpen={reopen} onDelete={remove} />
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { type RefObject, useCallback, useRef, useState } from "react";
+import type { ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { buildCard, type Card, cardText, classify, decide } from "@/lib/jarvis/cards";
 import type { IntentResult } from "@/lib/jev/types";
 
@@ -15,15 +16,11 @@ type Conn = { pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; audio
  * When Jarvis delegates, Jev's answer decides what to do (new card, change, save,
  * discard) in ~0.3 s; only questions go to a model (/api/agent, with MCP tools).
  */
-export function useJarvis() {
+export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   const [status, setStatus] = useState<JarvisStatus>("idle");
   const [log, setLog] = useState<LogLine[]>([]);
-  const [card, setCard] = useState<Card | null>(null);
-  const [draft, setDraft] = useState(false);
-  const [saved, setSaved] = useState<Card[]>([]);
   const [answer, setAnswer] = useState<string | null>(null);
   const conn = useRef<Conn | null>(null);
-  const cardRef = useRef<Card | null>(null);
   const t0 = useRef(0);
   // The user's words since Jarvis last spoke: what a delegation is about.
   const turn = useRef({ text: "", jarvisSpoke: false });
@@ -40,11 +37,8 @@ export function useJarvis() {
     });
   }, []);
 
-  const show = useCallback((c: Card | null, isDraft = false) => {
-    cardRef.current = c;
-    setCard(c);
-    setDraft(isDraft);
-  }, []);
+  /** Cards live in the Shapeshift input and its saved list, exactly as if typed. */
+  const show = useCallback((c: Card) => shapeshift.current?.show(c.text, c.intent), [shapeshift]);
 
   /** Jev once per distinct text: the speculative call and the delegation share it. */
   const classifyOnce = useCallback((text: string) => {
@@ -68,7 +62,7 @@ export function useJarvis() {
         const r = await classifyOnce(utterance);
         if (!r || turn.current.text !== utterance) return; // stale
         const d = decide(r);
-        if (d.action === "create" && r.intent.value !== "none") show(buildCard(text, r), true);
+        if (d.action === "create" && r.intent.value !== "none") show(buildCard(text, r));
       }, 250);
     },
     [classifyOnce, show],
@@ -81,7 +75,9 @@ export function useJarvis() {
       if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
       const { action } = decide(r);
       push("tool", `Jev: ${action} · ${r.intent.value} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
-      const current = cardRef.current;
+      // The card in the input: from voice or typed by hand.
+      const shown = shapeshift.current?.current();
+      const current = shown?.text.trim() && shown.intent ? buildCard(shown.text, r, shown.intent) : null;
       // The card's summary plus the words it was made from, so Jarvis can mention people, place, etc.
       const describe = (c: Card) => `${c.label}: ${c.summary} (z textu „${c.text}“)`;
 
@@ -110,14 +106,12 @@ export function useJarvis() {
           return `Karta upravená, zatím neuložená. ${describe(c)}.`;
         }
         case "save": {
-          if (!current) return "Žádná karta k uložení není.";
-          setSaved((s) => [current, ...s]);
-          show(null);
+          if (!current || !shapeshift.current?.save()) return "Žádná karta k uložení není.";
           return `Uloženo. ${describe(current)}.`;
         }
         case "discard": {
           if (!current) return "Žádná karta tu není.";
-          show(null);
+          shapeshift.current?.discard();
           return "Karta zahozená.";
         }
         default: {
@@ -141,7 +135,7 @@ export function useJarvis() {
         }
       }
     },
-    [classifyOnce, push, show],
+    [classifyOnce, push, shapeshift, show],
   );
 
   const cleanup = useCallback(() => {
@@ -209,7 +203,7 @@ export function useJarvis() {
               const id = ev.delegation?.id as string;
               // The words may still be arriving: give the transcript a moment.
               for (let i = 0; i < 6 && !turn.current.text.trim(); i++) await new Promise((r) => setTimeout(r, 50));
-              const utterance = turn.current.text.trim();
+              const utterance = turn.current.text.replace(/\[[^\]]*\]?/g, " ").replace(/\s{2,}/g, " ").trim();
               push("tool", `delegace: „${utterance}“`);
               const result = utterance ? await handle(utterance) : "Nerozuměl jsem, zopakuj to prosím.";
               push("tool", `→ ${result}`);
@@ -267,5 +261,5 @@ export function useJarvis() {
     setTimeout(() => conn.current === c && cleanup(), 15_000);
   }, [cleanup]);
 
-  return { status, log, card, draft, saved, answer, start, stop };
+  return { status, log, answer, start, stop };
 }

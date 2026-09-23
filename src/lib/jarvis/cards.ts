@@ -45,9 +45,10 @@ export function cardText(utterance: string) {
   return m?.[1] ? nominativeHead(rest) : rest;
 }
 
-export function buildCard(text: string, result: IntentResult): Card {
-  const intent = result.intent.value === "none" ? "note" : result.intent.value;
-  const data = parseFor(intent, parseTextFor(intent, text));
-  const def = registry[intent];
-  return { text, intent, label: def.label, summary: (def.summary as (d: typeof data) => string)(data), confidence: result.intent.confidence };
+/** The card Jev picked for the text, filled in by the Czech rules and parsers. */
+export function buildCard(text: string, result: IntentResult, intent?: CardIntent): Card {
+  const k = intent ?? (result.intent.value === "none" ? "note" : result.intent.value);
+  const data = parseFor(k, parseTextFor(k, text));
+  const def = registry[k];
+  return { text, intent: k, label: def.label, summary: (def.summary as (d: typeof data) => string)(data), confidence: result.intent.confidence };
 }

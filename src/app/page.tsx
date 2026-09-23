@@ -1,5 +1,5 @@
-import { JarvisPrototype } from "@/components/jarvis/JarvisPrototype";
+import { Jarvis } from "@/components/jarvis/Jarvis";
 
 export default function Home() {
-  return <JarvisPrototype />;
+  return <Jarvis />;
 }
