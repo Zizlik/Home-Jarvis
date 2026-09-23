@@ -35,16 +35,34 @@ const IDLE_MS = 30_000;
 const TRAILING_COMMAND =
   /^(.*\S)[\s,.;!…]+((?:(?:a|tak|no|díky|dík|diky|super|dobře|dobre)[\s,.!]+)*(?:ulož|uloz|uložit|ulozit|zruš|zrus|zrušit|zrusit|zahoď|zahod|smaž|smaz)(?:\s+(?:to|ji|ho|tu kartu|kartu))?)[\s.!…]*$/iu;
 
-/** "vypni se", "konec", "díky, to je vše": hang up at once, without a word from Jarvis. */
-const HANG_UP =
-  /^(?:\s*(?:jarvis\p{L}*|díky|diky|dík|dik|děkuju|dekuju|tak|dobře|dobre|ok|okej|super)[,.!]?\s*)*(?:vypni\s+se|vypnout|vypni|vypínám|stop|konec|končíme|koncime|ukonči\s+se|ukonci\s+se|zavěs|zaves|nashle\p{L}*|čau|cau|měj\s+se|mej\s+se|to\s+je\s+(?:vše|všechno|vse|vsechno)|to\s+stačí|to\s+staci|můžeš\s+jít|muzes\s+jit)(?:\s+(?:jarvis\p{L}*|díky|diky|prosím|prosim|už|uz|teď|ted|hned))*\s*[.!]?\s*$/iu;
-
-/** The last sentence (or last few words) of what was said: where "vypni se" is. */
+/** The last sentence of what was said. */
 const lastSentence = (u: string) => {
   const parts = u.split(/[.!?…]+/).map((p) => p.trim()).filter(Boolean);
   return parts[parts.length - 1] ?? u.trim();
 };
-const isHangUp = (u: string) => HANG_UP.test(lastSentence(u)) || HANG_UP.test(u.trim().split(/\s+/).slice(-4).join(" "));
+
+const plainWord = (w: string) => w.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+/** Words that mean "switch off", in any form ("vypni", "ukončit", "ukončíš", "konec", "stop"…). */
+const OFF_WORD = /^(vypn\p{L}*|vypin\p{L}*|ukonc\p{L}*|skonc\p{L}*|konec|koncime|konci\p{L}*|stop\p{L}*|staci|zaves\p{L}*|nashle\p{L}*|sbohem|vse|vsechno|dost)$/u;
+/** Words around it that don't change the meaning ("tak se vypni", "prosím tě, ukončíš se", "to je vše"). */
+const FILLER = /^(tak|se|si|to|je|uz|ted|hned|prosim|prosimte|te|jarvis\p{L}*|diky|dik|dekuju|dekuji|ok|okej|dobre|super|no|a|jo|ano|muzes|mej|mejte|mas|ho|tu|toho|vsechno|ja|bych|chci|potrebuju)$/u;
+
+/**
+ * "tak se vypni", "ukončit ukončit konec", "díky, to je vše": the end of what was said
+ * is only switch-off words and filler. "vypni světla v kuchyni" isn't.
+ */
+const isHangUp = (u: string) => {
+  const words = u.split(/[^\p{L}]+/u).filter(Boolean).map(plainWord);
+  let off = 0;
+  let i = words.length - 1;
+  for (; i >= 0; i--) {
+    if (OFF_WORD.test(words[i])) off++;
+    else if (!FILLER.test(words[i])) break;
+  }
+  // Nothing but switch-off words at the end, and they end a sentence (or the whole utterance).
+  const tail = words.slice(i + 1);
+  return off > 0 && tail.length > 0 && (i < 0 || OFF_WORD.test(tail[tail.length - 1]) || tail.length <= 4);
+};
 
 /** Jarvis saying goodbye means the conversation is over: hang up in the app too. */
 const GOODBYE = /(?<![\p{L}])(vypínám\s+se|vypinam\s+se|vypínám|nashledanou|na\s+shledanou|končím,?\s+ahoj|měj\s+se|mějte\s+se)(?![\p{L}])/iu;
