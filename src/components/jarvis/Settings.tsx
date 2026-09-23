@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, KeyRound, Loader2, Pencil, Plug, Plus, Server, Trash2, X } from "lucide-react";
+import { ArrowLeft, KeyRound, LibraryBig, Loader2, Pencil, Plug, Plus, Server, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { CatalogItem } from "@/lib/mcp-catalog-shared";
 import { notify } from "@/lib/notify";
 import type { PublicSettings } from "@/lib/settings";
 import { CONNECTORS, type ConnectorId, DEFAULT_AGENT_MODEL, VOICES } from "@/lib/settings-shared";
 import { cn } from "@/lib/utils";
+import { McpCatalog } from "./McpCatalog";
 
 type McpItem = PublicSettings["mcp"][number] & { clearAuthorization?: boolean };
 type State = Omit<PublicSettings, "mcp"> & { mcp: McpItem[] };
@@ -29,9 +31,16 @@ type Draft = {
   storedToken: string;
   token: string;
   clearToken: boolean;
-  headers: { key: string; value: string }[];
+  /** hint: description from the MCP catalog, shown under the header row. */
+  headers: { key: string; value: string; hint?: string }[];
   allowedTools: string;
   enabled: boolean;
+  /** From the MCP catalog: how to get the token (may contain a URL). */
+  tokenHint?: string;
+  /** From the MCP catalog: the Authorization header expects "Bearer <token>", the user pastes only the token. */
+  tokenBearer?: boolean;
+  /** From the MCP catalog: the URL has {placeholders} to fill in. */
+  urlNeedsEdit?: boolean;
 };
 
 const blankDraft = (): Draft => ({
@@ -49,6 +58,27 @@ const blankDraft = (): Draft => ({
   allowedTools: "",
   enabled: true,
 });
+
+const hasPlaceholder = (url: string) => /[{}]|%7B|%7D/i.test(url);
+
+/** A catalog entry as a new-server draft: the user only adds the token or header values. */
+const catalogDraft = (item: CatalogItem): Draft => {
+  const isAuth = (name: string) => name.toLowerCase() === "authorization";
+  const authHeader = item.headers.find((h) => isAuth(h.name));
+  const description = item.description.length > 500 ? `${item.description.slice(0, 499).trimEnd()}…` : item.description;
+  return {
+    ...blankDraft(),
+    label: (item.title || item.name.split("/").pop() || item.name).slice(0, 64),
+    description,
+    url: item.url,
+    headers: item.headers
+      .filter((h) => (isAuth(h.name) ? item.auth === "headers" : h.isRequired))
+      .map((h) => ({ key: h.name, value: "", hint: h.description || undefined })),
+    tokenHint: item.auth === "token" ? authHeader?.description || undefined : undefined,
+    tokenBearer: item.auth === "token",
+    urlNeedsEdit: item.needsUrlEdit,
+  };
+};
 
 const toDraft = (s: McpItem): Draft => ({
   id: s.id,
@@ -100,6 +130,7 @@ export function Settings() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [tests, setTests] = useState<Record<string, TestResult>>({});
 
   useEffect(() => {
@@ -216,9 +247,14 @@ export function Settings() {
             title="MCP servery"
             hint="Nástroje z těchto serverů může Jarvis použít. Podle popisu se rozhoduje, kdy který server zavolat."
             action={
-              <Button variant="outline" size="sm" onClick={() => setDraft(blankDraft())}>
-                <Plus /> Přidat server
-              </Button>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setCatalogOpen(true)}>
+                  <LibraryBig /> Katalog
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setDraft(blankDraft())}>
+                  <Plus /> Přidat server
+                </Button>
+              </div>
             }
           >
             {settings.mcp.length === 0 ? (
@@ -259,6 +295,17 @@ export function Settings() {
           {draft && <ServerForm draft={draft} onChange={setDraft} onSubmit={applyDraft} onCancel={() => setDraft(null)} />}
         </DialogContent>
       </Dialog>
+
+      <McpCatalog
+        open={catalogOpen}
+        onOpenChange={setCatalogOpen}
+        existingUrls={settings?.mcp.flatMap((s) => (s.kind === "url" && s.url ? [s.url] : [])) ?? []}
+        onPick={(item) => {
+          setCatalogOpen(false);
+          // Open the form after the catalog dialog has closed (Radix can leave the page unclickable when two dialogs swap in one tick).
+          setTimeout(() => setDraft(catalogDraft(item)), 0);
+        }}
+      />
     </main>
   );
 }
@@ -291,7 +338,9 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
         checked ? "bg-brand" : "bg-muted-foreground/30",
       )}
     >
-      <span className={cn("size-5 rounded-full bg-white shadow-sm transition-transform", checked ? "translate-x-[18px]" : "translate-x-0.5")} />
+      <span
+        className={cn("size-5 rounded-full bg-white shadow-sm transition-transform", checked ? "translate-x-[18px]" : "translate-x-0.5")}
+      />
     </button>
   );
 }
@@ -367,7 +416,7 @@ function ServerCard({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-sm font-medium">{label}</span>
@@ -377,12 +426,23 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; onChange: (d: Draft) => void; onSubmit: () => void; onCancel: () => void }) {
+function ServerForm({
+  draft: d,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  draft: Draft;
+  onChange: (d: Draft) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
   const set = (patch: Partial<Draft>) => onChange({ ...d, ...patch });
-  const setHeader = (i: number, patch: Partial<Draft["headers"][number]>) => set({ headers: d.headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) });
+  const setHeader = (i: number, patch: Partial<Draft["headers"][number]>) =>
+    set({ headers: d.headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) });
   const urlValid = (() => {
     try {
-      return /^https?:$/.test(new URL(d.url.trim()).protocol);
+      return /^https?:$/.test(new URL(d.url.trim()).protocol) && !hasPlaceholder(d.url);
     } catch {
       return false;
     }
@@ -432,8 +492,8 @@ function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; 
             </Select>
           </Field>
           <p className="rounded-lg bg-muted px-3 py-2 text-xs text-pretty text-muted-foreground">
-            Konektory OpenAI potřebují OAuth access token dané služby (třeba od Googlu). Ten po čase vyprší a bude potřeba ho vložit znovu. Pro trvalé
-            napojení je lepší vlastní MCP server.
+            Konektory OpenAI potřebují OAuth access token dané služby (třeba od Googlu). Ten po čase vyprší a bude potřeba ho vložit znovu.
+            Pro trvalé napojení je lepší vlastní MCP server.
           </p>
         </>
       )}
@@ -443,7 +503,13 @@ function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; 
       </Field>
 
       <Field label="Popis" hint="K čemu server slouží. Jarvis se podle toho rozhoduje, kdy ho použít.">
-        <Textarea value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={500} rows={2} placeholder="Ovládání světel a termostatu doma." />
+        <Textarea
+          value={d.description}
+          onChange={(e) => set({ description: e.target.value })}
+          maxLength={500}
+          rows={2}
+          placeholder="Ovládání světel a termostatu doma."
+        />
       </Field>
 
       {d.kind === "url" && (
@@ -457,10 +523,33 @@ function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; 
             spellCheck={false}
             required
           />
+          {hasPlaceholder(d.url) && (
+            <span className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-pretty text-amber-700 dark:text-amber-400">
+              URL je potřeba doplnit: nahraď část ve složených závorkách {"{…}"} svou hodnotou.
+            </span>
+          )}
         </Field>
       )}
 
-      <Field label="Token" hint={d.kind === "connector" ? "OAuth access token služby." : "Posílá se jako Bearer token. Nepovinné."}>
+      <Field
+        label="Token"
+        hint={
+          d.kind === "connector" ? (
+            "OAuth access token služby."
+          ) : d.tokenBearer ? (
+            <>
+              Vlož jen samotný token, bez slova Bearer. Jarvis ho posílá jako Bearer token.
+              {d.tokenHint && (
+                <span className="mt-1 block break-words">
+                  Nápověda serveru: <Linkified text={d.tokenHint} />
+                </span>
+              )}
+            </>
+          ) : (
+            "Posílá se jako Bearer token. Nepovinné."
+          )
+        }
+      >
         <div className="flex gap-2">
           <Input
             type="password"
@@ -488,29 +577,60 @@ function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; 
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Hlavičky</span>
           {d.headers.map((h, i) => (
-            <div key={i} className="flex gap-2">
-              <Input value={h.key} onChange={(e) => setHeader(i, { key: e.target.value })} placeholder="Název" aria-label="Název hlavičky" className="w-2/5" spellCheck={false} />
-              <Input
-                type="password"
-                value={h.value}
-                onChange={(e) => setHeader(i, { value: e.target.value })}
-                placeholder="Hodnota"
-                aria-label="Hodnota hlavičky"
-                autoComplete="off"
-              />
-              <Button type="button" variant="ghost" size="icon" aria-label="Odebrat hlavičku" onClick={() => set({ headers: d.headers.filter((_, j) => j !== i) })}>
-                <X />
-              </Button>
+            <div key={i} className="flex flex-col gap-1">
+              <div className="flex gap-2">
+                <Input
+                  value={h.key}
+                  onChange={(e) => setHeader(i, { key: e.target.value })}
+                  placeholder="Název"
+                  aria-label="Název hlavičky"
+                  className="w-2/5"
+                  spellCheck={false}
+                />
+                <Input
+                  type="password"
+                  value={h.value}
+                  onChange={(e) => setHeader(i, { value: e.target.value })}
+                  placeholder="Hodnota"
+                  aria-label="Hodnota hlavičky"
+                  autoComplete="off"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Odebrat hlavičku"
+                  onClick={() => set({ headers: d.headers.filter((_, j) => j !== i) })}
+                >
+                  <X />
+                </Button>
+              </div>
+              {h.hint && (
+                <span className="text-xs text-pretty break-words text-muted-foreground">
+                  <Linkified text={h.hint} />
+                </span>
+              )}
             </div>
           ))}
-          <Button type="button" variant="ghost" size="sm" className="self-start" onClick={() => set({ headers: [...d.headers, { key: "", value: "" }] })}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="self-start"
+            onClick={() => set({ headers: [...d.headers, { key: "", value: "" }] })}
+          >
             <Plus /> Přidat hlavičku
           </Button>
         </div>
       )}
 
       <Field label="Povolené nástroje" hint="Názvy oddělené čárkami. Prázdné = všechny.">
-        <Input value={d.allowedTools} onChange={(e) => set({ allowedTools: e.target.value })} placeholder="search, get_events" spellCheck={false} />
+        <Input
+          value={d.allowedTools}
+          onChange={(e) => set({ allowedTools: e.target.value })}
+          placeholder="search, get_events"
+          spellCheck={false}
+        />
       </Field>
 
       <DialogFooter>
@@ -522,5 +642,27 @@ function ServerForm({ draft: d, onChange, onSubmit, onCancel }: { draft: Draft; 
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+/** Plain text with http(s) links made clickable (hints from the MCP catalog). */
+function Linkified({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s<>"')]+)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (i % 2 === 0) return part;
+        const url = part.replace(/[.,;:!?]+$/, "");
+        const rest = part.slice(url.length);
+        return (
+          <span key={i}>
+            <a href={url} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+              {url}
+            </a>
+            {rest}
+          </span>
+        );
+      })}
+    </>
   );
 }
