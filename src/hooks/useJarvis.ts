@@ -64,6 +64,18 @@ const isHangUp = (u: string) => {
   return off > 0 && tail.length > 0 && (i < 0 || OFF_WORD.test(tail[tail.length - 1]) || tail.length <= 4);
 };
 
+/** "ulož to", "přidat", "ano, přidej", "jo, potvrď": save the card on screen. */
+const SAVE_WORD = /^(uloz\p{L}*|pridat|pridej\p{L}*|pridame|potvrd\p{L}*|ano|jo|jasne|ok|okej|zapis|zapsat|zapiste|dobre|super|hotovo|presne|perfektni|paradni|souhlas\p{L}*|muze|muzes|klidne)$/u;
+/** "zahoď to", "zruš", "smaž to": throw the card on screen away. */
+const DISCARD_WORD = /^(zahod\p{L}*|zrus\p{L}*|smaz\p{L}*|vymaz\p{L}*|odstran\p{L}*|nechci|nech)$/u;
+
+/** The last sentence is only these words plus filler ("ano, přidej to", "tak to zahoď"). */
+const onlyWords = (u: string, kind: RegExp) => {
+  const words = lastSentence(u).split(/[^\p{L}]+/u).filter(Boolean).map(plainWord);
+  const hits = words.filter((w) => kind.test(w)).length;
+  return hits > 0 && words.every((w) => kind.test(w) || FILLER.test(w)) && words.length <= 6;
+};
+
 /** Jarvis saying goodbye means the conversation is over: hang up in the app too. */
 const GOODBYE = /(?<![\p{L}])(vypínám\s+se|vypinam\s+se|vypínám|nashledanou|na\s+shledanou|končím,?\s+ahoj|měj\s+se|mějte\s+se)(?![\p{L}])/iu;
 
@@ -270,6 +282,13 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           hangUpRef.current();
           return;
         }
+        // "ulož to" / "přidat" / "zahoď to" with a card on screen: do it now, from the words alone.
+        const shownNow = shapeshift.current?.current();
+        if (!meetingRef.current && shownNow?.text.trim() && shownNow.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
+          const key = utterance.trim().toLowerCase();
+          if (!done.current.has(key)) done.current.set(key, enqueue(utterance));
+          return;
+        }
         // "začni meeting" / "ukonči meeting": act on the words alone, even if Jarvis never delegates it.
         if (OPEN_TOOL.some(([re]) => re.test(utterance)) || (meetingRef.current && END_MEETING.test(utterance) && /jarvis/i.test(utterance))) {
           const key = utterance.trim().toLowerCase();
@@ -334,6 +353,18 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
       if (tail && tail[1].split(/\s+/).length >= 2) {
         const first = await handleRef.current(tail[1]);
         return `${first} ${await handleRef.current(tail[2])}`;
+      }
+      // With a card on screen, "ulož to" / "přidat" / "ano" saves it and "zahoď to" discards it: no Jev needed.
+      const onScreen = shapeshift.current?.current();
+      if (!meeting && onScreen?.text.trim() && onScreen.intent && (onlyWords(utterance, SAVE_WORD) || onlyWords(utterance, DISCARD_WORD))) {
+        const save = onlyWords(utterance, SAVE_WORD);
+        const last = lastCommand.current;
+        if (last && Date.now() - last.at < 5000 && last.action === (save ? "save" : "discard")) return last.result;
+        const ok = save ? shapeshift.current?.save() : (shapeshift.current?.discard(), true);
+        const result = ok ? "Hotovo. Řekni jen „Hotovo.“" : "Kartu se nepodařilo uložit.";
+        push("tool", `${save ? "uloženo" : "zahozeno"} (bez Jeva)`);
+        lastCommand.current = { action: save ? "save" : "discard", at: Date.now(), result };
+        return result;
       }
       const r = await classifyOnce(utterance);
       if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
@@ -414,7 +445,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
               show(c);
             }
           }
-          return `Zobrazená karta, zatím neuložená. ${describe(c)}.`;
+          return `Karta je na obrazovce: ${describe(c)}. Řekni to jednou krátkou větou a na nic se neptej (uložit ji umí uživatel slovem „ulož“).`;
         }
         case "update": {
           if (aimsAtSaved && saved) {
@@ -444,7 +475,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         }
         case "save": {
           if (!current || !shapeshift.current?.save()) return remember("Žádná karta k uložení není.");
-          return remember(`Uloženo. ${describe(current)}.`);
+          return remember("Uloženo. Řekni jen „Hotovo.“");
         }
         case "discard": {
           if (aimsAtSaved && saved) {
@@ -453,7 +484,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
           }
           if (!current) return remember(hasContent(utterance) ? "Takovou uloženou kartu nevidím." : "Žádná karta tu není.");
           shapeshift.current?.discard();
-          return remember("Karta zahozená.");
+          return remember("Zahozeno. Řekni jen „Hotovo.“");
         }
         default: {
           const quickTopic = topicOf(r, utterance);
