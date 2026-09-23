@@ -1,6 +1,6 @@
 "use client";
 
-import { X } from "lucide-react";
+import { CloudCheck, CloudAlert, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { registry } from "@/components/intents/registry";
 import { spring, tween } from "@/lib/motion";
@@ -88,7 +88,17 @@ export function RecentStack({
                     >
                       {item.summary}
                     </span>
-                    <span className="shrink-0 text-[13px] font-medium text-muted-foreground">
+                    <span className="flex shrink-0 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+                      {item.google && (
+                        <CloudCheck className="size-3.5" aria-label="Zapsáno v Googlu" role="img">
+                          <title>Zapsáno v Googlu</title>
+                        </CloudCheck>
+                      )}
+                      {item.googleError && (
+                        <CloudAlert className="size-3.5 text-amber-600" aria-label={item.googleError} role="img">
+                          <title>{item.googleError}</title>
+                        </CloudAlert>
+                      )}
                       {def.label}
                     </span>
                   </motion.button>

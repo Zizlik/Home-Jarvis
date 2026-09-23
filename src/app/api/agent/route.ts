@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 import { AGENT_INSTRUCTIONS } from "@/lib/jarvis/config";
+import { status as googleStatus } from "@/lib/google/auth";
+import { GOOGLE_TOOLS, runGoogleTool } from "@/lib/google/tools";
 import { mcpTools, readSettings } from "@/lib/settings";
 
 export const runtime = "nodejs";
@@ -29,21 +31,40 @@ export async function POST(request: Request) {
   const now = new Date().toLocaleString("cs-CZ", { timeZone: "Europe/Prague", dateStyle: "full", timeStyle: "short" });
   client ??= new OpenAI({ maxRetries: 0 });
   const started = performance.now();
-  const ask = (tools: OpenAI.Responses.Tool[]) =>
+  const withGoogle = (await googleStatus()).connected;
+  const call = (tools: OpenAI.Responses.Tool[], input: OpenAI.Responses.ResponseInput | string, prev?: string) =>
     client!.responses.create(
       {
         model: settings.agentModel,
         instructions: `${AGENT_INSTRUCTIONS}\nTeď je ${now} (Praha).`,
-        input: context ? `${context}\n\nUživatel: ${question}` : question,
+        input,
         tools,
         reasoning: { effort: "none" },
         max_output_tokens: 400,
         store: true,
-        ...(previous ? { previous_response_id: previous } : {}),
+        ...(prev ? { previous_response_id: prev } : {}),
       },
       { signal: AbortSignal.timeout(30_000) },
     );
-  const web: OpenAI.Responses.Tool[] = [{ type: "web_search" }];
+  /** One question; Google function calls run here until the model has an answer. */
+  const ask = async (tools: OpenAI.Responses.Tool[]) => {
+    let res = await call(tools, context ? `${context}\n\nUživatel: ${question}` : question, previous);
+    for (let round = 0; round < 4; round++) {
+      const calls = res.output.filter((o): o is OpenAI.Responses.ResponseFunctionToolCall => o.type === "function_call");
+      if (!calls.length) break;
+      const outputs = await Promise.all(
+        calls.map(async (c) => {
+          const out = await runGoogleTool(c.name, JSON.parse(c.arguments || "{}") as Record<string, unknown>, question).catch((e: Error) => ({ chyba: e.message }));
+          used.push(`google.${c.name}`);
+          return { type: "function_call_output" as const, call_id: c.call_id, output: JSON.stringify(out).slice(0, 12_000) };
+        }),
+      );
+      res = await call(tools, outputs, res.id);
+    }
+    return res;
+  };
+  const used: string[] = [];
+  const web: OpenAI.Responses.Tool[] = [{ type: "web_search" }, ...(withGoogle ? GOOGLE_TOOLS : [])];
   const mcp = mcpTools(settings) as OpenAI.Responses.Tool[];
   try {
     let res: OpenAI.Responses.Response;
@@ -55,7 +76,7 @@ export async function POST(request: Request) {
       console.warn(`[agent] MCP server unavailable, answering without MCP: ${err.message}`);
       res = await ask(web);
     }
-    const used = res.output.filter((o) => o.type === "mcp_call" || o.type === "web_search_call").map((o) => (o.type === "mcp_call" ? `${o.server_label}.${o.name}` : "web_search"));
+    used.push(...res.output.filter((o) => o.type === "mcp_call" || o.type === "web_search_call").map((o) => (o.type === "mcp_call" ? `${o.server_label}.${o.name}` : "web_search")));
     console.info(`[agent] ${Math.round(performance.now() - started)}ms tools=[${used.join(",")}] "${question.slice(0, 50)}"`);
     // Spoken and shown as plain text: drop citations and Markdown links.
     const answer = res.output_text

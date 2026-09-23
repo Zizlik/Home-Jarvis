@@ -71,6 +71,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   }, []);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
   const lastCommand = useRef<{ action: string; at: number; result: string } | null>(null);
+  // The agent just read out an email and asked whether to send it: "ano"/"ne" is for the agent.
+  const agentAsked = useRef(false);
 
   const push = useCallback((kind: LogLine["kind"], text: string) => {
     setLog((l) => {
@@ -127,7 +129,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
       }
       const r = await classifyOnce(utterance);
       if (!r) return "Aplikace teď neodpovídá, zkus to prosím znovu.";
-      const { action } = decide(r);
+      const replyToAgent = agentAsked.current && /^(\S+\s+){0,5}\S*$/.test(utterance.trim());
+      const { action } = replyToAgent ? { action: "ask" as const } : decide(r);
       push("tool", `Jev: ${action} · ${r.intent.value} (${Math.round((r.action?.confidence ?? 0) * 100)} %)`);
       const last = lastCommand.current;
       if ((action === "save" || action === "discard") && last?.action === action && Date.now() - last.at < 5000) return last.result;
@@ -224,6 +227,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           const body = (await res.json().catch(() => ({}))) as { answer?: string; responseId?: string; tools?: string[]; error?: string };
           if (!body.answer) return body.error ?? "Na tohle teď nedokážu odpovědět.";
           agentThread.current = body.responseId;
+          agentAsked.current = !!body.tools?.includes("google.gmail_prepare");
           if (body.tools?.length) push("tool", `agent: ${body.tools.join(", ")}`);
           setAnswer(body.answer);
           return body.answer;

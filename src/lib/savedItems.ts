@@ -8,6 +8,11 @@ export const savedItemSchema = z.object({
   summary: z.string(),
   text: z.string(),
   createdAt: z.number(),
+  /** Where the card was also written in Google, or why it wasn't. */
+  google: z
+    .object({ target: z.enum(["calendar", "tasks", "keep"]), id: z.string(), parentIds: z.array(z.string()).optional(), url: z.string().optional() })
+    .optional(),
+  googleError: z.string().optional(),
 });
 export type SavedItem = z.infer<typeof savedItemSchema>;
 

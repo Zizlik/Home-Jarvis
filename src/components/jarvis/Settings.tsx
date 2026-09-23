@@ -13,6 +13,7 @@ import { notify } from "@/lib/notify";
 import type { PublicSettings } from "@/lib/settings";
 import { CONNECTORS, type ConnectorId, DEFAULT_AGENT_MODEL, VOICES } from "@/lib/settings-shared";
 import { cn } from "@/lib/utils";
+import { GoogleSettings } from "./GoogleSettings";
 import { McpCatalog } from "./McpCatalog";
 
 type McpItem = PublicSettings["mcp"][number] & { clearAuthorization?: boolean };
@@ -241,6 +242,10 @@ export function Settings() {
               className="font-mono sm:w-60"
               spellCheck={false}
             />
+          </Section>
+
+          <Section title="Google" hint="Kalendář, Tasks a Keep: kam se uložené karty zapíšou. Gmail a kalendář pak Jarvis použije i k odpovědím.">
+            <GoogleSettings value={settings.google} onChange={(patch) => update({ google: { ...settings.google, ...patch } })} />
           </Section>
 
           <Section

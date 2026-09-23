@@ -5,6 +5,7 @@ import { useRef, useState, useSyncExternalStore } from "react";
 import { Shapeshift, type ShapeshiftController } from "@/components/shapeshift/Shapeshift";
 import { type LogLine, useJarvis } from "@/hooks/useJarvis";
 import { chime, useWakeWord } from "@/hooks/useWakeWord";
+import { useGoogleSync } from "@/hooks/useGoogleSync";
 import { cn } from "@/lib/utils";
 
 const subscribeNoop = () => () => {};
@@ -51,6 +52,7 @@ const WAKE_LABEL: Record<string, string> = {
 /** Shapeshift's input, cards and saved list, with Jarvis's voice driving them. */
 export function Jarvis() {
   const shapeshift = useRef<ShapeshiftController>(null);
+  useGoogleSync();
   const { status, log, answer, start, stop } = useJarvis(shapeshift);
   // ?voice= overrides the saved voice, for trying voices out.
   const voice = useSyncExternalStore(

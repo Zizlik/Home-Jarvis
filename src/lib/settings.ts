@@ -43,11 +43,21 @@ export const mcpServerSchema = z.object({
 });
 export type McpServer = z.infer<typeof mcpServerSchema>;
 
+/** Where saved cards are also written in Google (see lib/google/sync.ts). */
+export const googleSyncSchema = z.object({
+  event: z.boolean().default(true),
+  reminder: z.boolean().default(true),
+  todo: z.enum(["tasks", "keep", "off"]).default("tasks"),
+  note: z.enum(["keep", "off"]).default("keep"),
+});
+export type GoogleSync = z.infer<typeof googleSyncSchema>;
+
 export const settingsSchema = z.object({
   voice: z.enum(VOICES).default("marin"),
   /** Model for questions and MCP work (anything Jev can't do with a card). */
   agentModel: z.string().min(1).default("gpt-5.6-luna"),
   mcp: z.array(mcpServerSchema).default([]),
+  google: googleSyncSchema.default(googleSyncSchema.parse({})),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
