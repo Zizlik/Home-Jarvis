@@ -18,6 +18,7 @@ Vrať:
 - actions: úkoly; owner = jméno účastníka, který ho má (použij jména, ne písmena), nebo null; due = termín jak zazněl, nebo null.
 - questions: co zůstalo otevřené.
 - speakers: přiřazení písmen ke jménům účastníků, jen kde je to z přepisu jasné (představení, oslovení, kontext), např. [{"label":"A","name":"Petr"}]. Když si nejsi jistý, dané písmeno vynech.
+Na meetingu je i hlasový asistent Jarvis: otázky, které mu lidé kladou („Jarvisi, …“), a jeho odpovědi do zápisu nepatří. Úkoly, které si nechali zapsat, ano.
 Piš věcně, česky, nic si nevymýšlej. Opravuj zjevné chyby přepisu podle kontextu (např. „eŠOK“ → „e-shop“).`;
 
 const str = { type: "string" };

@@ -5,7 +5,7 @@ import { completenessFor, parseFor } from "../src/lib/parse";
 import { needsFallback, parseTextFor } from "../src/lib/cs";
 import type { CardIntent } from "../src/lib/jev/types";
 
-const BASE = process.argv[2] ?? "http://127.0.0.1:3030";
+const BASE = process.argv[2] ?? "http://127.0.0.1:3040";
 
 const CASES: [string, string][] = [
   ["večeře s Petrem v pátek v 8 večer přes zoom", "event"],

@@ -16,6 +16,8 @@ export function normalizeExpression(text: string): string {
   s = s.replace(/(?<![\p{L}])(?:krát|krat)(?![\p{L}])/gu, "*").replace(/(?<![\p{L}])(?:děleno|deleno|lomeno)(?![\p{L}])/gu, "/");
   s = s.replace(/(?<![\p{L}])(?:mínus|minus)(?![\p{L}])/gu, "-").replace(/(?<![\p{L}])na druhou(?![\p{L}])/gu, "^2").replace(/(?<![\p{L}])na třetí(?![\p{L}])/gu, "^3");
   s = s.replace(/(\d),(\d{3})/g, "$1$2");
+  s = s.replace(/(\d+(?:\.\d+)?)k(?![a-z])/g, "($1*1000)");
+  s = s.replace(/\s*(?:kč|czk|korun\p{L}*|,-)(?![\p{L}])/gu, "");
   s = s.replace(/(\d+(?:\.\d+)?)\s*%\s*off\s+(\d+(?:\.\d+)?)/g, "$2*(1-$1/100)");
   s = s.replace(/(\d+(?:\.\d+)?)\s*%\s*of\s+/g, "($1/100)*");
   s = s.replace(/(\d+(?:\.\d+)?)\s*%/g, "($1/100)");

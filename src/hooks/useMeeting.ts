@@ -1,11 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { overlap } from "@/lib/jarvis/saved";
 import { EMPTY_MINUTES, type MeetingRecord, type Minutes, type Segment } from "@/lib/meeting/minutes";
 
 /** idle → connecting → live → stopping → processing (who spoke + final minutes) → done (review) */
 export type MeetingStatus = "idle" | "connecting" | "live" | "stopping" | "processing" | "done";
 export type { Segment };
+
+/** Content words in a task (for "is this the same task"). */
+const words = (t: string) => t.split(/[^\p{L}\d]+/u).filter((w) => w.length >= 3).length;
 
 /** A pause this long ends a segment (committed for its final transcript). */
 const PAUSE_MS = 2000;
@@ -30,6 +34,8 @@ export function useMeeting() {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  /** The meeting's mic, shared with Jarvis when it joins. */
+  const [stream, setStream] = useState<MediaStream | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState<string[]>([]);
@@ -50,6 +56,18 @@ export function useMeeting() {
   const summarized = useRef(0);
   const minutesRef = useRef<Minutes>(EMPTY_MINUTES);
   const minutesBusy = useRef<Promise<void> | null>(null);
+  // Action items added by hand or by Jarvis: kept when the model rewrites the minutes.
+  const manual = useRef<Minutes["actions"]>([]);
+  const keepManual = (m: Minutes): Minutes => {
+    // The model often rewords a task Jarvis wrote down ("Jana pošle nabídku…" → "Poslat nabídku… (Jana)"):
+    // same if most of the content words match.
+    const same = (a: string, b: string) => {
+      const n = Math.min(words(a), words(b)) || 1;
+      return a.trim().toLowerCase() === b.trim().toLowerCase() || overlap(a, `${b}`) / n >= 0.6;
+    };
+    const has = (t: string) => m.actions.some((a) => same(t, `${a.task} ${a.owner ?? ""}`));
+    return { ...m, actions: [...m.actions, ...manual.current.filter((a) => !has(a.task))] };
+  };
   const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
   // The recording for "who spoke" (webm/opus at 32 kbps ≈ 0.24 MB a minute; 25 MB ≈ 100 min).
   const recorder = useRef<MediaRecorder | null>(null);
@@ -85,8 +103,9 @@ export function useMeeting() {
         });
         const body = (await res.json().catch(() => ({}))) as { minutes?: Minutes; error?: string };
         if (body.minutes) {
-          minutesRef.current = body.minutes;
-          setMinutes(body.minutes);
+          const merged = keepManual(body.minutes);
+          minutesRef.current = merged;
+          setMinutes(merged);
           summarized.current = upto;
         } else setError(body.error ?? "Zápis se nepodařilo aktualizovat.");
       } finally {
@@ -171,8 +190,10 @@ export function useMeeting() {
     setMinutes(EMPTY_MINUTES);
     setSpeakers({});
     setEndedAt(null);
+    manual.current = [];
     try {
       mic.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      setStream(mic.current);
       chunks.current = [];
       try {
         const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t));
@@ -219,6 +240,7 @@ export function useMeeting() {
     conn.current?.pc.close();
     conn.current = null;
     mic.current?.getTracks().forEach((t) => t.stop());
+    setStream(null);
     void wakeLock.current?.release().catch(() => undefined);
     if (partialRef.current.trim()) {
       all.current = [...all.current, { at: Math.round((performance.now() - t0.current) / 1000), text: partialRef.current.trim(), speaker: null }];
@@ -253,8 +275,9 @@ export function useMeeting() {
     }).catch(() => null);
     const body = (await res?.json().catch(() => null)) as { minutes?: Minutes; speakers?: Record<string, string>; error?: string } | null;
     if (body?.minutes) {
-      minutesRef.current = body.minutes;
-      setMinutes(body.minutes);
+      const merged = keepManual(body.minutes);
+      minutesRef.current = merged;
+      setMinutes(merged);
       setSpeakers(body.speakers ?? {});
       if (!titleRef.current.trim()) setTitle(body.minutes.title);
       // Names the model recognized that weren't listed become participants.
@@ -268,7 +291,16 @@ export function useMeeting() {
     setStatus("done");
   }, [commit, updateMinutes]);
 
+  /** Add an action item that survives the minutes being rewritten (Jarvis: "zapiš úkol…"). */
+  const addAction = useCallback((task: string) => {
+    const a = { task, owner: null, due: null };
+    manual.current = [...manual.current, a];
+    minutesRef.current = { ...minutesRef.current, actions: [...minutesRef.current.actions, a] };
+    setMinutes(minutesRef.current);
+  }, []);
+
   const reset = useCallback(() => {
+    manual.current = [];
     setStep(null);
     setTitle("");
     setParticipants([]);
@@ -323,10 +355,12 @@ export function useMeeting() {
   return {
     status,
     step,
+    stream,
     segments,
     partial,
     minutes,
     setMinutes,
+    addAction,
     updating,
     error,
     startedAt,

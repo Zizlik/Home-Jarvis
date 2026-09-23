@@ -3,6 +3,8 @@
 import { Pause, Play, RotateCcw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { notify } from "@/lib/notify";
+import { timerLabel, timers } from "@/lib/timers";
 import { Button } from "@/components/ui/button";
 import type { TimerData } from "@/lib/parse/timer";
 import { formatClock } from "@/lib/parse/timer";
@@ -80,7 +82,19 @@ export function TimerRing({ data, signals, interactive }: CardProps<TimerData>) 
           {data.seconds ? <Meta>{describe(data.seconds)}</Meta> : <Placeholder insert=" 10 minut">Přidat délku</Placeholder>}
         </div>
         <div className="flex gap-2">
-          <Button size="sm" disabled={!interactive || (!stopwatch && elapsed >= total)} onClick={() => setRunning((r) => !r)}>
+          <Button
+            size="sm"
+            disabled={!interactive || (!stopwatch && elapsed >= total)}
+            onClick={() => {
+              // A countdown becomes a shared timer: it keeps running after this card is saved or closed.
+              if (!stopwatch && !running && elapsed === 0) {
+                timers.add(timerLabel(data.label), total);
+                notify(`Časovač „${timerLabel(data.label)}“ běží.`);
+                return;
+              }
+              setRunning((r) => !r);
+            }}
+          >
             {running ? <Pause /> : <Play />}
             {running ? "Pozastavit" : elapsed > 0 ? "Pokračovat" : "Spustit"}
           </Button>

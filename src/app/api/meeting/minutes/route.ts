@@ -14,6 +14,7 @@ Dostaneš dosavadní zápis a nový úsek přepisu. Vrať CELÝ aktualizovaný z
 - decisions: co se rozhodlo nebo dohodlo.
 - actions: úkoly, owner = kdo ho má (jméno, nebo null), due = termín jak zazněl (nebo null).
 - questions: co zůstalo otevřené.
+Na meetingu je i hlasový asistent Jarvis: otázky, které mu lidé kladou („Jarvisi, …“), a jeho odpovědi do zápisu nepatří. Úkoly, které si nechali zapsat, ano.
 Piš česky, věcně, bez vaty. Nic si nevymýšlej; co v přepisu není, do zápisu nepatří. Opravuj zjevné chyby přepisu podle kontextu.`;
 
 const FORMAT = {

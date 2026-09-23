@@ -9,6 +9,9 @@ import { chime } from "@/hooks/useWakeWord";
 import { type SavedItem, savedItems } from "@/lib/savedItems";
 import { findSaved, hasContent, overlap } from "@/lib/jarvis/saved";
 import { periodFor } from "@/lib/jarvis/period";
+import { parseTextFor } from "@/lib/cs";
+import { parseFor } from "@/lib/parse";
+import { timerLabel, timers } from "@/lib/timers";
 
 export type JarvisStatus = "idle" | "connecting" | "live" | "closing";
 export type LogLine = { at: number; kind: "you" | "jarvis" | "tool" | "info" | "error"; text: string };
@@ -40,6 +43,12 @@ const OPEN_TOOL: [RegExp, string, string][] = [
   ],
   [/(?<![\p{L}])(otevři|otevri|ukaž|ukaz|jdi do|přejdi do|prejdi do)(?![\p{L}]).{0,15}(nastavení|nastaveni)/iu, "/nastaveni", "Otevírám nastavení."],
 ];
+
+/** "spusť časovač na 5 minut", "nastav minutku", "spusť ho": start it, don't just show it. */
+const START = /(?<![\p{L}])(spusť|spust|spusťte|nastav|zapni|pusť|pust|odpočítej|odpocitej|odstartuj|start|dej)(?![\p{L}])/iu;
+
+/** Cards that are an answer rather than something to keep ("kolik je 15 % z…"). */
+const ANSWER_CARDS = new Set(["calc", "convert", "timezone", "countdown", "random", "split", "color"]);
 
 /** Long or rambling dictation gets tidied into card text by Gemini (/api/card). */
 const needsCleanup = (t: string) => t.split(/\s+/).length > 12 || /…|\.\s+\S.*\.\s+\S/.test(t);
@@ -91,7 +100,28 @@ function savedContext(list: SavedItem[]) {
  * When Jarvis delegates, Jev's answer decides what to do (new card, change, save,
  * discard) in ~0.3 s; only questions go to a model (/api/agent, with MCP tools).
  */
-export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
+/**
+ * Meeting mode: Jarvis joins a running meeting on "Hey Jarvis". Questions are
+ * answered with the meeting's minutes and transcript as context; anything to
+ * write down becomes an action item in the meeting's minutes, not a card.
+ */
+/** Something Jarvis did on a meeting, shown on the meeting page. */
+export type Activity =
+  | { kind: "task"; summary: string }
+  | { kind: "result"; label: string; summary: string }
+  | { kind: "timer"; label: string; seconds: number }
+  | { kind: "answer"; question: string; summary: string };
+
+export type MeetingHooks = {
+  /** Show what Jarvis just did. */
+  activity: (a: Activity) => void;
+  /** Minutes and recent transcript, for answers about the meeting. */
+  context: () => string;
+  /** Add an action item to the running meeting's minutes. */
+  addAction: (task: string) => void;
+};
+
+export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, meeting?: MeetingHooks) {
   const [status, setStatus] = useState<JarvisStatus>("idle");
   const [log, setLog] = useState<LogLine[]>([]);
   const [answer, setAnswer] = useState<string | null>(null);
@@ -118,6 +148,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   const early = useRef(new Map<string, Promise<unknown>>());
   // A peer connection with its offer already gathered, so a session starts ~0.2 s sooner.
   const prepared = useRef<{ pc: RTCPeerConnection; dc: RTCDataChannel; mic: MediaStream; at: number } | null>(null);
+  const meetingRef = useRef(meeting);
+  useEffect(() => {
+    meetingRef.current = meeting;
+  });
   // handle() hangs up before switching to another page.
   const stopRef = useRef<() => void>(() => undefined);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
@@ -263,6 +297,46 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
       const aimsAtSaved = !!saved && (!current || (hasContent(utterance) && saved.score > overlap(utterance, current.text)));
       const describeSaved = (x: SavedItem) => `${registry[x.intent].label}: ${x.summary}`;
 
+      // On a meeting, a calculation or conversion is answered, not written down.
+      if (meeting && action === "create" && ANSWER_CARDS.has(r.intent.value)) {
+        const c = buildCard(cardText(utterance), r);
+        meeting.activity({ kind: "result", label: c.label, summary: c.summary });
+        return `Výsledek (${c.label}): ${c.summary}.`;
+      }
+      if (meeting && action === "create" && r.intent.value === "timer") {
+        const t = parseFor("timer", parseTextFor("timer", cardText(utterance)));
+        if (t.seconds) {
+          timers.add(timerLabel(t.label), t.seconds);
+          meeting.activity({ kind: "timer", label: timerLabel(t.label), seconds: t.seconds });
+          return `Časovač ${t.label ? `„${t.label}“ ` : ""}na ${Math.round(t.seconds / 60) || t.seconds} ${t.seconds >= 60 ? "min" : "s"} běží, je vidět na obrazovce. Až doběhne, ozvu se.`;
+        }
+      }
+      if (meeting && (action === "create" || action === "update")) {
+        // On a meeting, "zapiš úkol pro Janu…" belongs in the minutes.
+        const task = (await once("clean", utterance, () => postCard({ utterance: cardText(utterance) }))) ?? cardText(utterance);
+        meeting.addAction(task);
+        meeting.activity({ kind: "task", summary: task });
+        return `Přidal jsem do zápisu úkol: ${task}.`;
+      }
+
+      // "spusť ho" with a timer card in the input starts that timer.
+      if (!meeting && current?.intent === "timer" && START.test(utterance) && !hasContent(utterance.replace(START, ""))) {
+        const t = parseFor("timer", parseTextFor("timer", current.text));
+        if (t.seconds) {
+          timers.add(timerLabel(t.label), t.seconds);
+          shapeshift.current?.discard();
+          return `Časovač ${timerLabel(t.label)} běží, je vidět nahoře. Až doběhne, ozvu se.`;
+        }
+      }
+      // "spusť časovač na 5 minut" starts right away; without a start word it's just a card.
+      if (!meeting && action === "create" && r.intent.value === "timer" && START.test(utterance)) {
+        const t = parseFor("timer", parseTextFor("timer", cardText(utterance)));
+        if (t.seconds) {
+          timers.add(timerLabel(t.label), t.seconds);
+          return `Časovač ${timerLabel(t.label)} na ${t.seconds >= 60 ? `${Math.round(t.seconds / 60)} min` : `${t.seconds} s`} běží, je vidět na obrazovce. Až doběhne, ozvu se.`;
+        }
+      }
+
       switch (action) {
         case "create": {
           let c = buildCard(cardText(utterance), r);
@@ -317,16 +391,20 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           return remember("Karta zahozená.");
         }
         default: {
-          const topic = topicOf(r, utterance);
+          const quickTopic = topicOf(r, utterance);
+          // On a meeting, "co jsme řešili" means this meeting, not the archive.
+          const topic = meeting && quickTopic === "meetings" ? null : quickTopic;
           if (!replyToAgent && topic) {
             const facts = await quick(utterance, topic);
             if (facts) {
               push("tool", `rychlá odpověď: ${topic}`);
               setAnswer(facts);
+              meeting?.activity({ kind: "answer", question: utterance, summary: facts });
               return `Údaje (řekni je stručně a přirozeně, časy slovy): ${facts}`;
             }
           }
           const context = [
+            meeting ? `Právě probíhá meeting, Jarvis na něm poslouchá. ${meeting.context()}` : "",
             current ? `Na obrazovce je karta ${describe(current)}.` : "",
             savedContext(savedItems.getSnapshot()),
             history.current.length ? `Poslední rozhovor:\n${history.current.slice(-6).join("\n")}` : "",
@@ -344,11 +422,12 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           agentAsked.current = !!body.tools?.includes("google.gmail_prepare");
           if (body.tools?.length) push("tool", `agent: ${body.tools.join(", ")}`);
           setAnswer(body.answer);
+          meeting?.activity({ kind: "answer", question: utterance, summary: body.answer });
           return body.answer;
         }
       }
     },
-    [classifyOnce, once, push, quick, shapeshift, show],
+    [classifyOnce, meeting, once, push, quick, shapeshift, show],
   );
   useEffect(() => {
     handleRef.current = handle;
@@ -388,7 +467,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
   const warm = useCallback(() => void classify("dobrý den").catch(() => null), []);
 
   const start = useCallback(
-    async (voice?: string, sharedMic?: MediaStream | null) => {
+    async (voice?: string, sharedMic?: MediaStream | null, opts?: { instructions?: string; context?: string; stayOn?: boolean }) => {
       if (conn.current) return;
       setStatus("connecting");
       // Keep earlier conversations in the transcript; timings restart per conversation.
@@ -417,7 +496,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         const send = (ev: object) => dc.readyState === "open" && dc.send(JSON.stringify(ev));
         let lastActivity = performance.now();
         const idle = setInterval(() => {
-          if (performance.now() - lastActivity < IDLE_MS || dc.readyState !== "open" || conn.current?.dc !== dc) return;
+          // A meeting participant stays for the whole meeting.
+          if (opts?.stayOn || performance.now() - lastActivity < IDLE_MS || dc.readyState !== "open" || conn.current?.dc !== dc) return;
           push("info", "Nikdo nemluví, končím.");
           send({ type: "session.close" });
         }, 5000);
@@ -425,6 +505,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
         const unsubscribe = savedItems.subscribe(() => send({ type: "session.thinking.append", delegation_id: null, content: savedContext(savedItems.getSnapshot()) }));
         conn.current = { pc, dc, mic, ownMic: mic !== sharedMic, audio, idle, unsubscribe };
         let spoken = "";
+        // When the user's words last arrived: a delegation can come before the last few.
+        let lastInput = 0;
 
         dc.addEventListener("message", async ({ data }) => {
           const ev = JSON.parse(data as string);
@@ -432,11 +514,13 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
           switch (ev.type) {
             case "session.started":
               chime("ready");
-              send({ type: "session.thinking.append", delegation_id: null, content: savedContext(savedItems.getSnapshot()) });
+              if (opts?.instructions) send({ type: "session.instructions.append", delegation_id: null, content: opts.instructions });
+              send({ type: "session.thinking.append", delegation_id: null, content: opts?.context ?? savedContext(savedItems.getSnapshot()) });
               setStatus("live");
               push("info", "Spojeno, mluv.");
               break;
             case "session.input_transcript.delta": {
+              lastInput = performance.now();
               const t = turn.current;
               if (t.jarvisSpoke) {
                 if (spoken) history.current.push(`Jarvis: ${spoken.trim()}`);
@@ -457,9 +541,14 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
               break;
             case "session.delegation.created": {
               const id = ev.delegation?.id as string;
-              // The words may still be arriving: give the transcript a moment.
-              for (let i = 0; i < 6 && !turn.current.text.trim(); i++) await new Promise((r) => setTimeout(r, 50));
-              const utterance = turn.current.text.replace(/\[[^\]]*\]?/g, " ").replace(/\s{2,}/g, " ").trim();
+              // The words may still be arriving: wait until the transcript is quiet for 350 ms (at most ~1.2 s).
+              for (let i = 0; i < 12 && (!turn.current.text.trim() || performance.now() - lastInput < 350); i++) await new Promise((r) => setTimeout(r, 100));
+              let utterance = turn.current.text.replace(/\[[^\]]*\]?/g, " ").replace(/\s{2,}/g, " ").trim();
+              // On a meeting the buffer holds everyone's talk: keep what follows the last "Jarvisi, …".
+              if (meetingRef.current) {
+                const at = [...utterance.matchAll(/(?<![\p{L}])(hey\s+)?jarvis\p{L}*/giu)].pop()?.index;
+                if (at !== undefined) utterance = utterance.slice(at);
+              }
               // These words are handled now; whatever the user says next is a new request.
               turn.current.text = "";
               push("tool", `delegace: „${utterance}“`);
@@ -518,5 +607,12 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>) {
     stopRef.current = stop;
   }, [stop]);
 
-  return { status, log, answer, start, stop, prewarm, warm };
+  /** Have Jarvis say something unprompted ("časovač doběhl"), if a session is running. */
+  const announce = useCallback((text: string) => {
+    const dc = conn.current?.dc;
+    if (dc?.readyState === "open") dc.send(JSON.stringify({ type: "session.commentary.append", delegation_id: null, content: text }));
+    return dc?.readyState === "open";
+  }, []);
+
+  return { status, log, answer, start, stop, prewarm, warm, announce };
 }

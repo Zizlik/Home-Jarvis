@@ -34,11 +34,12 @@ export const plain = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").to
 const NUMBER_LIST: [string, number][] = [
   ["jeden|jedna|jedno|jednu", 1], ["dva|dvě|dvou|dvěma", 2], ["tři|třech|třem|třemi", 3], ["čtyři|čtyřech|čtyřem", 4],
   ["pět|pěti", 5], ["šest|šesti", 6], ["sedm|sedmi", 7], ["osm|osmi", 8], ["devět|devíti", 9], ["deset|deseti", 10],
-  ["jedenáct", 11], ["dvanáct", 12], ["třináct", 13], ["čtrnáct", 14], ["patnáct", 15], ["šestnáct", 16], ["sedmnáct", 17],
-  ["osmnáct", 18], ["devatenáct", 19], ["dvacet", 20], ["třicet", 30], ["čtyřicet", 40], ["padesát", 50], ["šedesát", 60],
-  ["sedmdesát", 70], ["osmdesát", 80], ["devadesát", 90], ["sto", 100],
+  ["jedenáct|jedenácti", 11], ["dvanáct|dvanácti", 12], ["třináct|třinácti", 13], ["čtrnáct|čtrnácti", 14], ["patnáct|patnácti", 15],
+  ["šestnáct|šestnácti", 16], ["sedmnáct|sedmnácti", 17], ["osmnáct|osmnácti", 18], ["devatenáct|devatenácti", 19], ["dvacet|dvaceti", 20],
+  ["třicet|třiceti", 30], ["čtyřicet|čtyřiceti", 40], ["padesát|padesáti", 50], ["šedesát|šedesáti", 60], ["sedmdesát|sedmdesáti", 70],
+  ["osmdesát|osmdesáti", 80], ["devadesát|devadesáti", 90], ["sto|sta", 100],
 ];
-const TENS = "dvacet|třicet|čtyřicet|padesát|šedesát|sedmdesát|osmdesát|devadesát";
+const TENS = "dvacet|dvaceti|třicet|třiceti|čtyřicet|čtyřiceti|padesát|padesáti|šedesát|šedesáti|sedmdesát|sedmdesáti|osmdesát|osmdesáti|devadesát|devadesáti";
 const ONES = "jedna|jeden|dva|dvě|tři|čtyři|pět|šest|sedm|osm|devět";
 const NUMBER_WORDS: Record<string, number> = Object.fromEntries(NUMBER_LIST.flatMap(([f, n]) => f.split("|").map((x) => [plain(x), n])));
 const NUMBER_RE = w(NUMBER_LIST.map(([f]) => f).join("|"));
@@ -49,12 +50,13 @@ function numbers(text: string) {
     [/(?<![\d ]\d|\d )(\d{1,3}) (\d{3})(?![\d]| \d)/g, "$1$2"],
     // decimal comma: "12,50" → "12.50"
     [/(\d),(\d{1,2})(?!\d)/g, "$1.$2"],
-    [w("(\\d+(?:\\.\\d+)?)\\s*(?:tisíc|tis\\.?)"), (_, n) => `${n}k`],
-    [w("(\\d+(?:\\.\\d+)?)\\s*(?:milionů|miliony|milion|mil\\.)"), (_, n) => String(Number(n) * 1_000_000)],
     // "padesát čtyři" / "50 4" (dictation) → 54
     [w(`(${TENS})\\s+(${ONES})`), (_, t, u) => String(NUMBER_WORDS[plain(t)] + NUMBER_WORDS[plain(u)])],
     [NUMBER_RE, (m) => String(NUMBER_WORDS[plain(m)] ?? m)],
     [/(?<![\d.,])([2-9]0) ([1-9])(?![\d.,:])/g, (_, t, u) => String(Number(t) + Number(u))],
+    // after the number words, so "dvaceti tisíc" → "20k"
+    [w("(\\d+(?:\\.\\d+)?)\\s*(?:tisíc|tis\\.?)"), (_, n) => `${n}k`],
+    [w("(\\d+(?:\\.\\d+)?)\\s*(?:milionů|miliony|milion|mil\\.)"), (_, n) => String(Number(n) * 1_000_000)],
     [w("korun|korunami|kč|czk|,-"), "Kč"],
   ]);
 }
@@ -454,12 +456,16 @@ function color(text: string) {
   ]);
 }
 
+/** Calc reads Czech itself (lib/parse/calc.ts); it only needs the numbers in digits. */
+const calc = (t: string) => t;
+
 const RULES: Partial<Record<CardIntent, (t: string) => string>> = {
+  calc,
   event, reminder, todo, timer, habit, split, expense, convert: convertUnits, travel, countdown, timezone, random, goal, color,
 };
 
 /** Cards whose parsers read the text as typed (they already handle Czech or only show it). */
-export const TYPED_TEXT: ReadonlySet<CardIntent> = new Set(["poll", "note", "link", "contact", "calc", "color"]);
+export const TYPED_TEXT: ReadonlySet<CardIntent> = new Set(["poll", "note", "link", "contact", "color"]);
 
 /** Rough "is this Czech?" test, so English input skips the rewrite entirely. */
 const CZECH_HINT = new RegExp(

@@ -6,6 +6,7 @@ import { Shapeshift, type ShapeshiftController } from "@/components/shapeshift/S
 import { type LogLine, useJarvis } from "@/hooks/useJarvis";
 import { chime, useWakeWord } from "@/hooks/useWakeWord";
 import { useGoogleSync } from "@/hooks/useGoogleSync";
+import { Timers } from "./Timers";
 import { cn } from "@/lib/utils";
 
 const subscribeNoop = () => () => {};
@@ -53,7 +54,7 @@ const WAKE_LABEL: Record<string, string> = {
 export function Jarvis() {
   const shapeshift = useRef<ShapeshiftController>(null);
   useGoogleSync();
-  const { status, log, answer, start, stop, prewarm } = useJarvis(shapeshift);
+  const { status, log, answer, start, stop, prewarm, announce } = useJarvis(shapeshift);
   // ?voice= overrides the saved voice, for trying voices out.
   const voice = useSyncExternalStore(
     subscribeNoop,
@@ -166,6 +167,7 @@ export function Jarvis() {
       </header>
 
       <Shapeshift controllerRef={shapeshift} inputAction={talk}>
+        <Timers className="mt-4" onDone={(label) => announce(`Časovač „${label}“ právě doběhl. Krátce to oznam.`)} />
         {/* Lives only during the conversation; the transcript keeps it afterwards. */}
         {answer && status !== "idle" && (
           <section aria-label="Odpověď Jarvise" className="mt-4 rounded-2xl bg-muted/60 px-4 py-3 text-[15px] leading-relaxed">
