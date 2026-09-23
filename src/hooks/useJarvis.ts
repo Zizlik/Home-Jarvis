@@ -35,6 +35,10 @@ const IDLE_MS = 30_000;
 const TRAILING_COMMAND =
   /^(.*\S)[\s,.;!…]+((?:(?:a|tak|no|díky|dík|diky|super|dobře|dobre)[\s,.!]+)*(?:ulož|uloz|uložit|ulozit|zruš|zrus|zrušit|zrusit|zahoď|zahod|smaž|smaz)(?:\s+(?:to|ji|ho|tu kartu|kartu))?)[\s.!…]*$/iu;
 
+/** "vypni se", "konec", "díky, to je vše": hang up at once, without a word from Jarvis. */
+const HANG_UP =
+  /^(?:\s*(?:jarvis\p{L}*|díky|diky|dík|dik|děkuju|dekuju|tak|dobře|dobre|ok|okej|super)[,.!]?\s*)*(?:vypni\s+se|vypnout|vypni|vypínám|stop|konec|končíme|koncime|ukonči\s+se|ukonci\s+se|zavěs|zaves|nashle\p{L}*|čau|cau|měj\s+se|mej\s+se|to\s+je\s+(?:vše|všechno|vse|vsechno)|to\s+stačí|to\s+staci|můžeš\s+jít|muzes\s+jit)(?:\s+(?:jarvis\p{L}*|díky|diky|prosím|prosim|už|uz|teď|ted|hned))*\s*[.!]?\s*$/iu;
+
 /** "začni meeting", "chci poradu hned", "otevři nastavení": Jarvis's own screens, not cards. */
 const OPEN_TOOL: [RegExp, string, string][] = [
   [
@@ -162,6 +166,8 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   useEffect(() => {
     meetingRef.current = meeting;
   });
+  // preview() hangs up on "vypni se" (set once cleanup exists).
+  const hangUpRef = useRef<() => void>(() => undefined);
   // handle() hangs up before switching to another page.
   const stopRef = useRef<() => void>(() => undefined);
   // "Zruš" then "Zruš to" from the growing transcript is one command, not two.
@@ -231,6 +237,11 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
     (utterance: string) => {
       if (speculate.current) clearTimeout(speculate.current);
       speculate.current = setTimeout(async () => {
+        // "vypni se": off right away, before Jarvis says anything (on a meeting only when addressed).
+        if (HANG_UP.test(utterance.trim()) && (!meetingRef.current || /jarvis/i.test(utterance))) {
+          hangUpRef.current();
+          return;
+        }
         // "začni meeting" / "ukonči meeting": act on the words alone, even if Jarvis never delegates it.
         if (OPEN_TOOL.some(([re]) => re.test(utterance)) || (meetingRef.current && END_MEETING.test(utterance) && /jarvis/i.test(utterance))) {
           const key = utterance.trim().toLowerCase();
@@ -264,6 +275,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   /** Do what the user asked; returns what Jarvis should say. */
   const handle = useCallback(
     async (utterance: string): Promise<string> => {
+      if (HANG_UP.test(utterance.trim()) && (!meeting || /jarvis/i.test(utterance))) {
+        hangUpRef.current();
+        return "Uživatel tě vypnul. Nic neříkej.";
+      }
       // Only when addressed: people also say "ukončíme to" to each other.
       if (meeting && END_MEETING.test(utterance) && /jarvis/i.test(utterance)) {
         push("tool", "končím meeting");
@@ -627,7 +642,16 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
 
   useEffect(() => {
     stopRef.current = stop;
-  }, [stop]);
+    // Immediate: silence the voice now, then close the session (usage still reported if it answers).
+    hangUpRef.current = () => {
+      const c = conn.current;
+      if (!c) return;
+      c.audio.muted = true;
+      push("info", "Vypnuto.");
+      if (c.dc.readyState === "open") c.dc.send(JSON.stringify({ type: "session.close" }));
+      setTimeout(() => conn.current === c && cleanup(), 1500);
+    };
+  }, [stop, cleanup, push]);
 
   /** Have Jarvis say something unprompted ("časovač doběhl"), if a session is running. */
   const announce = useCallback((text: string) => {

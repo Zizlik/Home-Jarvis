@@ -1,4 +1,4 @@
-import { capitalize, collapse, findDate, removeRange, tidy, titleCase } from "./common";
+import { capitalize, collapse, findDate, removeDate, removeRange, tidy, titleCase } from "./common";
 
 export type EventData = {
   title: string;
@@ -27,7 +27,7 @@ export function parseEvent(text: string, ref?: Date): EventData {
   let rest = ` ${collapse(text)} `;
 
   const date = findDate(rest, ref);
-  if (date) rest = removeRange(rest, date.index, date.text.length);
+  if (date) rest = removeDate(rest, date);
 
   let link: string | null = null;
   const linkRe = /\s(?:on|over|via)\s+(google meet|gmeet|zoom|meet|teams|facetime|skype|discord|whatsapp)\b/i;

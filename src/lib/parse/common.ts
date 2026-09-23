@@ -59,6 +59,8 @@ export type DateHit = {
   hasTime: boolean;
   text: string;
   index: number;
+  /** A time said apart from the day ("zítra FedEx v 11:30"): also remove this range. */
+  also?: { text: string; index: number };
 };
 
 export function findDate(text: string, ref: Date = new Date()): DateHit | null {
@@ -67,13 +69,28 @@ export function findDate(text: string, ref: Date = new Date()): DateHit | null {
   const r = results[0];
   // chrono is happy to read a bare number as a date; require something date-like.
   if (/^\d+$/.test(r.text.trim())) return null;
-  return {
+  const hit: DateHit = {
     start: r.start.date(),
     end: r.end ? r.end.date() : null,
     hasTime: r.start.isCertain("hour"),
     text: r.text,
     index: r.index,
   };
+  // "tomorrow FedEx at 11:30": the day and the time came as two results; put them together.
+  const time = !hit.hasTime ? results.slice(1).find((x) => x.start.isCertain("hour") && !x.start.isCertain("day")) : undefined;
+  if (time) {
+    const t = time.start.date();
+    hit.start = new Date(hit.start.getFullYear(), hit.start.getMonth(), hit.start.getDate(), t.getHours(), t.getMinutes());
+    hit.hasTime = true;
+    hit.also = { text: time.text, index: time.index };
+  }
+  return hit;
+}
+
+/** Remove a date hit from the text, including a time said apart from it. */
+export function removeDate(text: string, hit: DateHit) {
+  const ranges = [{ index: hit.index, length: hit.text.length }, ...(hit.also ? [{ index: hit.also.index, length: hit.also.text.length }] : [])].sort((a, b) => b.index - a.index);
+  return ranges.reduce((t, r) => removeRange(t, r.index, r.length), text);
 }
 
 export function removeRange(text: string, index: number, length: number) {

@@ -149,6 +149,9 @@ function dates(text: string) {
     [w("(?:o|v|kolem)? ?půlnoci|půlnoc"), "at midnight"],
     [w(`(?:v|ve|od|kolem|okolo|na)?\\s*půl (${HALF_LIST.join("|")})(?:\\s+(${PART}))?`), (_, h, part) =>
       clock(HALF_HOURS[plain(h)] ?? 0, 30, part)],
+    // "v 11 30" (spoken "v jedenáct třicet") = 11:30
+    [w(`(?:v|ve|od|kolem|okolo)\\s+(\\d{1,2})\\s+([0-5]\\d)(?![\\d:.])(?:\\s+(${PART}))?`), (_, h, m, part) =>
+      Number(h) <= 24 ? clock(Number(h), Number(m), part) : _],
     [w(`(?:v|ve|od|kolem|okolo)\\s+(\\d{1,2})(?:[:.](\\d{2}))?(?!\\s*(?:min|hours|sec|km|kg|%|Kč|dní|dny|days|people|lidí|osob|x))(?:\\s*(?:hodin|hod\\.?|h))?(?:\\s+(${PART}))?`), (_, h, m, part) =>
       Number(h) <= 24 ? clock(Number(h), Number(m ?? 0), part) : _],
     [w(`(\\d{1,2})(?:[:.](\\d{2}))?\\s+(${PART})`), (_, h, m, part) => clock(Number(h), Number(m ?? 0), part)],
