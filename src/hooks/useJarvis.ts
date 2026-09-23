@@ -39,6 +39,16 @@ const TRAILING_COMMAND =
 const HANG_UP =
   /^(?:\s*(?:jarvis\p{L}*|díky|diky|dík|dik|děkuju|dekuju|tak|dobře|dobre|ok|okej|super)[,.!]?\s*)*(?:vypni\s+se|vypnout|vypni|vypínám|stop|konec|končíme|koncime|ukonči\s+se|ukonci\s+se|zavěs|zaves|nashle\p{L}*|čau|cau|měj\s+se|mej\s+se|to\s+je\s+(?:vše|všechno|vse|vsechno)|to\s+stačí|to\s+staci|můžeš\s+jít|muzes\s+jit)(?:\s+(?:jarvis\p{L}*|díky|diky|prosím|prosim|už|uz|teď|ted|hned))*\s*[.!]?\s*$/iu;
 
+/** The last sentence (or last few words) of what was said: where "vypni se" is. */
+const lastSentence = (u: string) => {
+  const parts = u.split(/[.!?…]+/).map((p) => p.trim()).filter(Boolean);
+  return parts[parts.length - 1] ?? u.trim();
+};
+const isHangUp = (u: string) => HANG_UP.test(lastSentence(u)) || HANG_UP.test(u.trim().split(/\s+/).slice(-4).join(" "));
+
+/** Jarvis saying goodbye means the conversation is over: hang up in the app too. */
+const GOODBYE = /(?<![\p{L}])(vypínám\s+se|vypinam\s+se|vypínám|nashledanou|na\s+shledanou|končím,?\s+ahoj|měj\s+se|mějte\s+se)(?![\p{L}])/iu;
+
 /** "začni meeting", "chci poradu hned", "otevři nastavení": Jarvis's own screens, not cards. */
 const OPEN_TOOL: [RegExp, string, string][] = [
   [
@@ -238,7 +248,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
       if (speculate.current) clearTimeout(speculate.current);
       speculate.current = setTimeout(async () => {
         // "vypni se": off right away, before Jarvis says anything (on a meeting only when addressed).
-        if (HANG_UP.test(utterance.trim()) && (!meetingRef.current || /jarvis/i.test(utterance))) {
+        if (isHangUp(utterance) && (!meetingRef.current || /jarvis/i.test(lastSentence(utterance)))) {
           hangUpRef.current();
           return;
         }
@@ -275,7 +285,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
   /** Do what the user asked; returns what Jarvis should say. */
   const handle = useCallback(
     async (utterance: string): Promise<string> => {
-      if (HANG_UP.test(utterance.trim()) && (!meeting || /jarvis/i.test(utterance))) {
+      if (isHangUp(utterance) && (!meeting || /jarvis/i.test(lastSentence(utterance)))) {
         hangUpRef.current();
         return "Uživatel tě vypnul. Nic neříkej.";
       }
@@ -542,6 +552,7 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
         const unsubscribe = savedItems.subscribe(() => send({ type: "session.thinking.append", delegation_id: null, content: savedContext(savedItems.getSnapshot()) }));
         conn.current = { pc, dc, mic, ownMic: mic !== sharedMic, audio, idle, unsubscribe };
         let spoken = "";
+        let goodbye = false;
         // When the user's words last arrived: a delegation can come before the last few.
         let lastInput = 0;
 
@@ -573,6 +584,10 @@ export function useJarvis(shapeshift: RefObject<ShapeshiftController | null>, me
               if (!turn.current.jarvisSpoke && turn.current.text.trim()) history.current.push(`Uživatel: ${turn.current.text.trim()}`);
               turn.current.jarvisSpoke = true;
               spoken += ev.delta ?? "";
+              if (!meetingRef.current && GOODBYE.test(spoken) && !goodbye) {
+                goodbye = true;
+                setTimeout(() => hangUpRef.current(), 1800);
+              }
               // Voice cues like "[clear throat]" are for the speech, not the transcript.
               push("jarvis", (ev.delta ?? "").replace(/\s*\[[^\]]*\]\s*/g, " "));
               break;
